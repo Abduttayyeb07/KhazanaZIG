@@ -11,7 +11,14 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "resolveJsonModule": true
+    "resolveJsonModule": true,
+    "moduleResolution": "node",
+    "baseUrl": ".",
+    "paths": {
+      "@zig/shared-types": ["../packages/shared-types/dist/index.d.ts"],
+      "@zig/logger": ["../packages/logger/dist/index.d.ts"],
+      "@zig/config": ["../packages/config/dist/index.d.ts"]
+    }
   },
   "include": ["src"],
   "references": [

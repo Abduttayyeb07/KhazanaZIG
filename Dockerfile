@@ -5,7 +5,7 @@
 # per-package node_modules (and backend's postinstall `prisma generate` finds the
 # schema), then compile every workspace package. The runner carries the whole
 # built workspace so the pnpm symlinks + generated Prisma client resolve at runtime.
-FROM node:22-slim AS builder
+FROM node:22-slim@sha256:7af03b14a13c8cdd38e45058fd957bf00a72bbe17feac43b1c15a689c029c732 AS builder
 RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates && rm -rf /var/lib/apt/lists/*
 RUN corepack enable && corepack prepare pnpm@9.0.0 --activate
 WORKDIR /app
@@ -17,7 +17,7 @@ RUN pnpm --filter @zig/shared-types build && \
     pnpm --filter @zig/config         build && \
     pnpm --filter @zig/core-engine    build
 
-FROM node:22-slim AS runner
+FROM node:22-slim@sha256:7af03b14a13c8cdd38e45058fd957bf00a72bbe17feac43b1c15a689c029c732 AS runner
 RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates && rm -rf /var/lib/apt/lists/*
 ENV NODE_ENV=production
 WORKDIR /app
