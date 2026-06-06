@@ -12,8 +12,6 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
-    "moduleResolution": "node",
-    "baseUrl": ".",
     "paths": {
       "@zig/shared-types": ["../packages/shared-types/dist/index.d.ts"],
       "@zig/logger": ["../packages/logger/dist/index.d.ts"],
