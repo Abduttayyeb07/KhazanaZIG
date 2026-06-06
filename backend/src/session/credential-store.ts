@@ -66,7 +66,16 @@ export class CredentialStore {
   }
 
   async load(exchange: Exchange): Promise<PlainCredentials | null> {
-    const row = await this.prisma.exchangeCredential.findUnique({ where: { exchange } });
+    let row;
+    try {
+      row = await this.prisma.exchangeCredential.findUnique({ where: { exchange } });
+    } catch (err) {
+      if (this.isMissingTable(err)) {
+        this.log.warn("Credential table missing - treating stored credentials as empty");
+        return null;
+      }
+      throw err;
+    }
     if (!row) return null;
 
     try {
@@ -89,7 +98,16 @@ export class CredentialStore {
   }
 
   async list(): Promise<StoredCredentialMeta[]> {
-    const rows = await this.prisma.exchangeCredential.findMany();
+    let rows;
+    try {
+      rows = await this.prisma.exchangeCredential.findMany();
+    } catch (err) {
+      if (this.isMissingTable(err)) {
+        this.log.warn("Credential table missing - returning empty credential list");
+        return [];
+      }
+      throw err;
+    }
     return rows.map((r) => ({
       exchange: r.exchange as Exchange,
       label: r.label,
@@ -98,7 +116,24 @@ export class CredentialStore {
   }
 
   async remove(exchange: Exchange): Promise<void> {
-    await this.prisma.exchangeCredential.deleteMany({ where: { exchange } });
+    try {
+      await this.prisma.exchangeCredential.deleteMany({ where: { exchange } });
+    } catch (err) {
+      if (this.isMissingTable(err)) {
+        this.log.warn({ exchange }, "Credential table missing - nothing to remove");
+        return;
+      }
+      throw err;
+    }
     this.log.info({ exchange }, "Stored credentials removed");
+  }
+
+  private isMissingTable(err: unknown): boolean {
+    return (
+      typeof err === "object" &&
+      err !== null &&
+      "code" in err &&
+      (err as { code?: string }).code === "P2021"
+    );
   }
 }

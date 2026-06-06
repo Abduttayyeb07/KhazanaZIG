@@ -10,7 +10,8 @@ import type { TelegramNotifier } from "./notifier.js";
 // existing notifier.
 // ────────────────────────────────────────────────────────────────────────────────
 
-export type CommandHandler = (args: string[], reply: (text: string) => void) => void | Promise<void>;
+export type CommandReply = (text: string, replyMarkup?: Record<string, unknown>) => void;
+export type CommandHandler = (args: string[], reply: CommandReply) => void | Promise<void>;
 
 interface TgUpdate {
   update_id: number;
@@ -96,7 +97,7 @@ export class TelegramCommandListener {
     const [rawCmd, ...args] = text.split(/\s+/);
     const cmd = rawCmd.split("@")[0].toLowerCase();
     const handler = this.handlers.get(cmd);
-    const reply = (t: string) => this.tg.notify(t);
+    const reply: CommandReply = (t, replyMarkup) => this.tg.notify(t, replyMarkup);
 
     if (!handler) {
       reply(`Unknown command: <code>${cmd}</code>. Try /help`);

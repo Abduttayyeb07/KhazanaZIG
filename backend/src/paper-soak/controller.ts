@@ -6,7 +6,7 @@ import type { ExecutionPipeline } from "../execution-engine/pipeline.js";
 import type { OrderRegistry } from "../execution-engine/registry.js";
 import type { ModeController } from "../decision-gate/mode-controller.js";
 import type { TelegramNotifier } from "../telegram/notifier.js";
-import type { TelegramCommandListener } from "../telegram/command-listener.js";
+import type { CommandReply, TelegramCommandListener } from "../telegram/command-listener.js";
 import { PaperSoak, defaultSoakSettings, type SoakSettings } from "./index.js";
 
 // ── Soak controller ─────────────────────────────────────────────────────────────
@@ -42,7 +42,7 @@ export class SoakController {
     return this.soak !== null;
   }
 
-  async start(reply: (t: string) => void): Promise<void> {
+  async start(reply: CommandReply): Promise<void> {
     if (this.soak) {
       reply("ℹ️ Soak already running. /status for snapshot, /soak_stop to stop.");
       return;
@@ -65,7 +65,7 @@ export class SoakController {
     reply("▶️ <b>Paper soak started.</b> You'll get a message on every decision and fill.");
   }
 
-  stop(reply: (t: string) => void): void {
+  stop(reply: CommandReply): void {
     if (!this.soak) {
       reply("ℹ️ Soak is not running.");
       return;
@@ -76,7 +76,7 @@ export class SoakController {
     reply("⏹️ <b>Paper soak stopped.</b> Engine back to READ_ONLY.");
   }
 
-  status(reply: (t: string) => void): void {
+  status(reply: CommandReply): void {
     if (!this.soak) {
       reply(`⏸️ Soak not running.\n\n${this.configText()}`);
       return;
@@ -84,7 +84,7 @@ export class SoakController {
     reply(`▶️ <b>Soak running</b>\n\n${this.soak.statusText()}`);
   }
 
-  set(args: string[], reply: (t: string) => void): void {
+  set(args: string[], reply: CommandReply): void {
     if (this.soak) {
       reply("⚠️ Stop the soak first (/soak_stop) before changing settings.");
       return;
@@ -113,12 +113,14 @@ export class SoakController {
 
   // Register all Telegram commands on the listener.
   register(listener: TelegramCommandListener): void {
+    listener.on("/start", (_a, reply) => reply(this.startText(), this.commandKeyboard()));
+    listener.on("/menu", (_a, reply) => reply(this.startText(), this.commandKeyboard()));
     listener.on("/soak_start", (_a, reply) => this.start(reply));
     listener.on("/soak_stop", (_a, reply) => this.stop(reply));
     listener.on("/status", (_a, reply) => this.status(reply));
     listener.on("/soak_set", (a, reply) => this.set(a, reply));
-    listener.on("/soak_config", (_a, reply) => reply(this.configText()));
-    listener.on("/help", (_a, reply) => reply(this.helpText()));
+    listener.on("/soak_config", (_a, reply) => reply(this.configText(), this.commandKeyboard()));
+    listener.on("/help", (_a, reply) => reply(this.helpText(), this.commandKeyboard()));
   }
 
   private applySetting(key: string, val: string): string | null {
@@ -162,6 +164,23 @@ export class SoakController {
       `entry: <code>${s.entryCost === 0 ? "market mid" : s.entryCost}</code> · tick: <code>${s.tickSeconds}s</code> · buyslice: <code>${s.buySlicePct}</code>\n` +
       `reserve floor: <code>${this.d.cfg.RESERVE_FLOOR}</code> (set in .env — matches risk engine)`
     );
+  }
+
+  private startText(): string {
+    return `${this.helpText()}\n\n${this.running ? "Current run:" : "Current setup:"}\n${this.running ? this.soak?.statusText() : this.configText()}`;
+  }
+
+  private commandKeyboard(): Record<string, unknown> {
+    return {
+      keyboard: [
+        [{ text: "/status" }, { text: "/soak_config" }],
+        [{ text: "/soak_start" }, { text: "/soak_stop" }],
+        [{ text: "/help" }],
+      ],
+      resize_keyboard: true,
+      one_time_keyboard: false,
+      is_persistent: true,
+    };
   }
 
   private helpText(): string {

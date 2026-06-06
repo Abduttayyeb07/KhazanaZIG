@@ -18,13 +18,13 @@ export class TelegramNotifier {
     }
   }
 
-  async send(text: string): Promise<void> {
+  async send(text: string, replyMarkup?: Record<string, unknown>): Promise<void> {
     if (!this.enabled) return;
 
     try {
       await axios.post(
         `https://api.telegram.org/bot${this.token}/sendMessage`,
-        { chat_id: this.chatId, text, parse_mode: "HTML" },
+        { chat_id: this.chatId, text, parse_mode: "HTML", ...(replyMarkup ? { reply_markup: replyMarkup } : {}) },
         { timeout: 5_000 }
       );
     } catch (err) {
@@ -33,7 +33,7 @@ export class TelegramNotifier {
   }
 
   // Fire-and-forget — never throws, never blocks execution
-  notify(text: string): void {
-    this.send(text).catch(() => undefined);
+  notify(text: string, replyMarkup?: Record<string, unknown>): void {
+    this.send(text, replyMarkup).catch(() => undefined);
   }
 }
