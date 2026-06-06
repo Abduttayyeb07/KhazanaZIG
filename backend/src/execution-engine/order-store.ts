@@ -52,25 +52,38 @@ export class OrderStore {
   // Load non-terminal orders — the live set that needs recovery on boot.
   async loadActive(): Promise<ManagedOrder[]> {
     if (!this.prisma) return [];
-    const rows = await this.prisma.managedOrder.findMany({
-      where: { status: { notIn: TERMINAL } },
-    });
-    return rows.map((r) => ({
-      clientOrderId: r.clientOrderId,
-      requestId: r.requestId,
-      exchange: r.exchange as Exchange,
-      symbol: r.symbol,
-      side: r.side as "buy" | "sell",
-      price: Number(r.price),
-      quantity: Number(r.quantity),
-      filledQuantity: Number(r.filledQuantity),
-      status: r.status as ManagedOrderStatus,
-      source: r.source as ExecutionSource,
-      reason: r.reason,
-      exchangeOrderId: r.exchangeOrderId,
-      paper: false, // only real orders are ever stored
-      createdAt: r.createdAt.getTime(),
-      updatedAt: r.updatedAt.getTime(),
-    }));
+    try {
+      const rows = await this.prisma.managedOrder.findMany({
+        where: { status: { notIn: TERMINAL } },
+      });
+      return rows.map((r) => ({
+        clientOrderId: r.clientOrderId,
+        requestId: r.requestId,
+        exchange: r.exchange as Exchange,
+        symbol: r.symbol,
+        side: r.side as "buy" | "sell",
+        price: Number(r.price),
+        quantity: Number(r.quantity),
+        filledQuantity: Number(r.filledQuantity),
+        status: r.status as ManagedOrderStatus,
+        source: r.source as ExecutionSource,
+        reason: r.reason,
+        exchangeOrderId: r.exchangeOrderId,
+        paper: false, // only real orders are ever stored
+        createdAt: r.createdAt.getTime(),
+        updatedAt: r.updatedAt.getTime(),
+      }));
+    } catch (err) {
+      if (isMissingTable(err)) {
+        this.log.warn("Managed order table missing - starting with empty in-memory order registry");
+        return [];
+      }
+      this.log.warn({ err }, "Failed to load active managed orders - starting with empty in-memory order registry");
+      return [];
+    }
   }
+}
+
+function isMissingTable(err: unknown): boolean {
+  return typeof err === "object" && err !== null && "code" in err && (err as { code: string }).code === "P2021";
 }
