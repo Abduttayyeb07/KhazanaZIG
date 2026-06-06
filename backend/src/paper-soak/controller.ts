@@ -84,6 +84,14 @@ export class SoakController {
     reply(`▶️ <b>Soak running</b>\n\n${this.soak.statusText()}`);
   }
 
+  fills(reply: CommandReply): void {
+    if (!this.soak) {
+      reply("Soak is not running. Start it with /soak_start to create a paper fill ledger.", this.commandKeyboard());
+      return;
+    }
+    reply(this.soak.fillsText(10), this.commandKeyboard());
+  }
+
   set(args: string[], reply: CommandReply): void {
     if (this.soak) {
       reply("⚠️ Stop the soak first (/soak_stop) before changing settings.");
@@ -118,6 +126,7 @@ export class SoakController {
     listener.on("/soak_start", (_a, reply) => this.start(reply));
     listener.on("/soak_stop", (_a, reply) => this.stop(reply));
     listener.on("/status", (_a, reply) => this.status(reply));
+    listener.on("/fills", (_a, reply) => this.fills(reply));
     listener.on("/soak_set", (a, reply) => this.set(a, reply));
     listener.on("/soak_config", (_a, reply) => reply(this.configText(), this.commandKeyboard()));
     listener.on("/help", (_a, reply) => reply(this.helpText(), this.commandKeyboard()));
@@ -173,7 +182,8 @@ export class SoakController {
   private commandKeyboard(): Record<string, unknown> {
     return {
       keyboard: [
-        [{ text: "/status" }, { text: "/soak_config" }],
+        [{ text: "/status" }, { text: "/fills" }],
+        [{ text: "/soak_config" }],
         [{ text: "/soak_start" }, { text: "/soak_stop" }],
         [{ text: "/help" }],
       ],

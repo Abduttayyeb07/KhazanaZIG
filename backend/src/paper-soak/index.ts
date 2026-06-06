@@ -126,6 +126,27 @@ export class PaperSoak {
     return this.reporter.statusText();
   }
 
+  fillsText(limit = 10): string {
+    const fills = this.account.recentFills(limit);
+    if (fills.length === 0) return "No paper fills recorded yet.";
+
+    return (
+      `<b>Recent paper fills</b>\n` +
+      fills
+        .map((f) => {
+          const at = new Date(f.filledAt).toISOString();
+          const notional = f.price * f.size;
+          return (
+            `${at}\n` +
+            `<code>${f.side.toUpperCase()}</code> <code>${fmt(f.size)} ZIG</code> @ <code>${f.price.toFixed(6)}</code>\n` +
+            `notional <code>${notional.toFixed(2)} USDT</code> fee <code>${f.fee.toFixed(2)} ${f.feeAsset}</code>\n` +
+            `<code>${f.fillId}</code>`
+          );
+        })
+        .join("\n\n")
+    );
+  }
+
   // Called from main's registry "fill" handler for PAPER- fills only.
   onPaperFill(ev: OrderEvent, order: ManagedOrder): void {
     if (order.exchange !== this.d.settings.exchange) return;
@@ -145,4 +166,8 @@ export class PaperSoak {
     }
     return this.d.markFn();
   }
+}
+
+function fmt(n: number): string {
+  return n.toLocaleString("en-US", { maximumFractionDigits: 2 });
 }

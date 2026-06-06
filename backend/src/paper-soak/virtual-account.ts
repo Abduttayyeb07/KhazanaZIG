@@ -80,6 +80,10 @@ export class VirtualAccount {
     });
   }
 
+  recentFills(limit = 10): ExchangeFill[] {
+    return this.fills.slice(-limit).reverse();
+  }
+
   // Apply a simulated paper fill: move virtual cash/inventory and record it for
   // cost-basis derivation. A synthetic taker fee makes paper PnL more honest.
   applyPaperFill(
