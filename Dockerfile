@@ -1,36 +1,26 @@
-FROM node:22-alpine AS installer
+# node:22-slim (Debian) — ships OpenSSL, which Prisma needs. (alpine/musl trips
+# Prisma's libssl detection.)
+#
+# Single build stage: install with the source present so pnpm creates the
+# per-package node_modules (and backend's postinstall `prisma generate` finds the
+# schema), then compile every workspace package. The runner carries the whole
+# built workspace so the pnpm symlinks + generated Prisma client resolve at runtime.
+FROM node:22-slim AS builder
+RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates && rm -rf /var/lib/apt/lists/*
 RUN corepack enable && corepack prepare pnpm@9.0.0 --activate
 WORKDIR /app
 
-COPY package.json pnpm-workspace.yaml ./
-COPY packages/shared-types/package.json ./packages/shared-types/package.json
-COPY packages/logger/package.json       ./packages/logger/package.json
-COPY packages/config/package.json       ./packages/config/package.json
-COPY backend/package.json               ./backend/package.json
-
+COPY . .
 RUN pnpm install --no-frozen-lockfile
-
-FROM node:22-alpine AS builder
-RUN corepack enable && corepack prepare pnpm@9.0.0 --activate
-WORKDIR /app
-
-COPY --from=installer /app/node_modules        ./node_modules
-COPY --from=installer /app/package.json        ./package.json
-COPY --from=installer /app/pnpm-workspace.yaml ./pnpm-workspace.yaml
-
-COPY packages/ ./packages/
-COPY backend/  ./backend/
-
 RUN pnpm --filter @zig/shared-types build && \
     pnpm --filter @zig/logger         build && \
     pnpm --filter @zig/config         build && \
     pnpm --filter @zig/core-engine    build
 
-RUN pnpm --filter @zig/core-engine deploy --prod /deploy
-
-FROM node:22-alpine AS runner
-WORKDIR /app
+FROM node:22-slim AS runner
+RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates && rm -rf /var/lib/apt/lists/*
 ENV NODE_ENV=production
-COPY --from=builder /deploy .
+WORKDIR /app
+COPY --from=builder /app ./
 USER node
-CMD ["node", "dist/main.js"]
+CMD ["node", "backend/dist/main.js"]
