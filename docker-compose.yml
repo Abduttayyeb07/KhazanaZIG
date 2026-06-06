@@ -1,0 +1,63 @@
+# All services communicate over the internal zig-net network.
+# No database or cache ports are exposed to the host.
+
+networks:
+  zig-net:
+    driver: bridge
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: zig_treasury
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - zig-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    networks:
+      - zig-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  core-engine:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runner
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Override connection URLs to use Docker-internal service hostnames.
+      # These override anything in .env so keys from .env are still loaded.
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/zig_treasury
+      REDIS_URL: redis://redis:6379
+      NODE_ENV: production
+    networks:
+      - zig-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  redis_data:

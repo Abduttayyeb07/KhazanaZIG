@@ -1,0 +1,35 @@
+{
+  "name": "@zig/core-engine",
+  "version": "1.0.0",
+  "private": true,
+  "main": "./dist/main.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/main.ts",
+    "start": "node dist/main.js",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist",
+    "chaos": "tsx src/chaos/harness.ts",
+    "test:risk": "tsx src/decision-gate/risk-engine.test.ts",
+    "prisma:generate": "prisma generate",
+    "prisma:push": "prisma db push",
+    "postinstall": "prisma generate"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.22.0",
+    "@zig/config": "workspace:*",
+    "@zig/logger": "workspace:*",
+    "@zig/shared-types": "workspace:*",
+    "axios": "^1.7.0",
+    "protobufjs": "^7.4.0",
+    "ws": "^8.18.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.0",
+    "prisma": "^5.22.0",
+    "tsx": "^4.15.0",
+    "typescript": "^5.5.0"
+  }
+}

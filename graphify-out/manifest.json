@@ -1,0 +1,322 @@
+{
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\backend\\src\\main.ts": {
+    "mtime": 1780555168.2202873,
+    "hash": "9df0caa4e76ffa38e94144d975a3ce9d"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\backend\\src\\api\\audit.ts": {
+    "mtime": 1780551817.2000623,
+    "hash": "9da0498827d748dd568761d8a64bc5c2"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\backend\\src\\api\\server.ts": {
+    "mtime": 1780551842.3884847,
+    "hash": "5574f4bf1a4e214b9d3e11fe1b0669cf"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\backend\\src\\api\\middleware\\rate-limit.ts": {
+    "mtime": 1780389345.627141,
+    "hash": "bc91f33505a8978c1d04a5afd706d650"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\backend\\src\\api\\middleware\\require-operator.ts": {
+    "mtime": 1780389333.0416708,
+    "hash": "0adebca5345c11084fff7b60666bd62e"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\backend\\src\\api\\middleware\\sanitize-body.ts": {
+    "mtime": 1780503683.0749338,
+    "hash": "82968ee5782d474cb1a8634bceeea820"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\backend\\src\\chaos\\harness.ts": {
+    "mtime": 1780570839.075891,
+    "hash": "824077df36fa87cf61a71322134de6e7"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\backend\\src\\database\\client.ts": {
+    "mtime": 1780327146.4509506,
+    "hash": "6c581b70aac75f2b0da0f2873e3901b7"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\backend\\src\\decision-gate\\allow-trade.ts": {
+    "mtime": 1780311219.1669855,
+    "hash": "c29d530934717b12b7b3c57761e7efd9"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\backend\\src\\decision-gate\\mode-controller.ts": {
+    "mtime": 1780552039.8075128,
+    "hash": "f620c638aa379e62abfb2daedfed1fd8"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\backend\\src\\decision-gate\\risk-engine.ts": {
+    "mtime": 1780311198.3762333,
+    "hash": "505d0219ee7a838ddc0d44a1b7b62c74"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\backend\\src\\decision-gate\\treasury-gate.ts": {
+    "mtime": 1780503206.7622116,
+    "hash": "70dd2093ec7560e7a6f49044d80c514d"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\backend\\src\\exchange\\http-error.ts": {
+    "mtime": 1780388224.8215618,
+    "hash": "14f36bdfc5d80bae187217d07ccab221"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\backend\\src\\exchange\\bybit\\normalizer.ts": {
+    "mtime": 1780307627.3272836,
+    "hash": "2d5411582d0a7603d20b9315e7ff87bd"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\backend\\src\\exchange\\bybit\\rest.ts": {
+    "mtime": 1780554994.148888,
+    "hash": "cb14405a1dc864c9470f3409ed201391"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\backend\\src\\exchange\\bybit\\websocket.ts": {
+    "mtime": 1780315266.6631339,
+    "hash": "c85676925a141e37bbdb40304bdcc819"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\backend\\src\\exchange\\mexc\\normalizer.ts": {
+    "mtime": 1780307980.6810813,
+    "hash": "3253035334e3683904cdd347e1ca9097"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\backend\\src\\exchange\\mexc\\protobuf.ts": {
+    "mtime": 1780325381.6731372,
+    "hash": "b4accdced164753147af2d637b094c7f"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\backend\\src\\exchange\\mexc\\rest.ts": {
+    "mtime": 1780555027.5801651,
+    "hash": "e0d6345565d999c5796d075436ca0144"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\backend\\src\\exchange\\mexc\\websocket.ts": {
+    "mtime": 1780325440.4037428,
+    "hash": "e94aa70f398d990d367641776b43a612"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\backend\\src\\execution-engine\\adapter.ts": {
+    "mtime": 1780503156.2231815,
+    "hash": "0325d9cde266dc89e369783d723dc883"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\backend\\src\\execution-engine\\exchange-router.ts": {
+    "mtime": 1780311267.4689662,
+    "hash": "306769b41112ced5c4fb0ee8a9996e01"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\backend\\src\\execution-engine\\executor.ts": {
+    "mtime": 1780311293.8030765,
+    "hash": "ef5b69f87f2e76244bf702dd4c2ff1ed"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\backend\\src\\execution-engine\\idempotency.ts": {
+    "mtime": 1780311253.83035,
+    "hash": "5e482bd38ba34eeb41ffc1b0fafe1322"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\backend\\src\\execution-engine\\lifecycle.ts": {
+    "mtime": 1780503349.962348,
+    "hash": "9f075d43babbd3d1d2dbf107d359fd9e"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\backend\\src\\execution-engine\\order-manager.ts": {
+    "mtime": 1780325539.3601546,
+    "hash": "bd8626654ed8502d92aa0b337682c5c3"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\backend\\src\\execution-engine\\order-reconciler.ts": {
+    "mtime": 1780570763.028471,
+    "hash": "ac38d6ac53710d3921164290a5840017"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\backend\\src\\execution-engine\\order-store.ts": {
+    "mtime": 1780554289.114349,
+    "hash": "d0cd47977e93dc65ed689b3a2c077b82"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\backend\\src\\execution-engine\\paper-engine.ts": {
+    "mtime": 1780503179.7621405,
+    "hash": "407cbde6ce3350d756bcc9b25cedbd62"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\backend\\src\\execution-engine\\pipeline.ts": {
+    "mtime": 1780571553.6695032,
+    "hash": "1dfac18ac587cc6ca769bf9caad028a4"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\backend\\src\\execution-engine\\real-adapter.ts": {
+    "mtime": 1780555061.3188002,
+    "hash": "900c2eeb1f971677ea66ef3d6268ffcf"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\backend\\src\\execution-engine\\registry.ts": {
+    "mtime": 1780570740.8763783,
+    "hash": "049aa157b5b367258abbda18b0eec17e"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\backend\\src\\market-ingestion\\mexc-poller.ts": {
+    "mtime": 1780318909.0891585,
+    "hash": "73665e55db56eb4c0e8426e8a8877b30"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\backend\\src\\market-ingestion\\pipeline.ts": {
+    "mtime": 1780325473.816796,
+    "hash": "98c45b204c3fc1cbe1665f5195f15fd9"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\backend\\src\\modes\\manager.ts": {
+    "mtime": 1780310272.698061,
+    "hash": "a13732134e340bc1e4ae4c861dc9794e"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\backend\\src\\orderbook\\engine.ts": {
+    "mtime": 1780310225.926982,
+    "hash": "3971a1e12705e8bc6705093c788e8c3e"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\backend\\src\\reconciliation\\drift-detector.ts": {
+    "mtime": 1780391704.8670292,
+    "hash": "8c42413d223cae27476e7603b58b81ee"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\backend\\src\\reconciliation\\engine.ts": {
+    "mtime": 1780391756.0178583,
+    "hash": "22da70de747de79a82eb87952c50dd09"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\backend\\src\\session\\crypto.ts": {
+    "mtime": 1780326748.846962,
+    "hash": "cefcfe9275ef9198fa1a848835daad2c"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\backend\\src\\session\\exchange-client-factory.ts": {
+    "mtime": 1780314166.5154762,
+    "hash": "816d430f31d4185f47bd85e56bcbeead"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\backend\\src\\session\\session-manager.ts": {
+    "mtime": 1780327217.641452,
+    "hash": "638f8523ea8d010009b43541ce828a6f"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\backend\\src\\session\\trading-session.ts": {
+    "mtime": 1780314137.2517662,
+    "hash": "098927bbcd86b017a99ddf56dac79eaf"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\backend\\src\\state\\recovery.ts": {
+    "mtime": 1780327315.3162496,
+    "hash": "b9b41b45c7742e7b4af56ffdb976d8ad"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\backend\\src\\state-engine\\index.ts": {
+    "mtime": 1780313769.504145,
+    "hash": "d05399441e22707fe44471e2c5deafe7"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\backend\\src\\state-engine\\reducer.ts": {
+    "mtime": 1780503552.3278694,
+    "hash": "43cf1c1de52b66bb49b20629da91242d"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\backend\\src\\state-engine\\store.ts": {
+    "mtime": 1780503538.4478421,
+    "hash": "9e55f9272fdd50d66f14d3db65335d8f"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\backend\\src\\telegram\\notifier.ts": {
+    "mtime": 1780314966.416126,
+    "hash": "6acb05af0d3d69d2b8f81ccf531f83cf"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\backend\\src\\treasury\\derive.ts": {
+    "mtime": 1780485339.260831,
+    "hash": "88667c2050524526080c2faea30170bd"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\backend\\src\\treasury\\engine.ts": {
+    "mtime": 1780485584.5160923,
+    "hash": "cc9e54a9d624695369c5edaec5eefd00"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\backend\\src\\treasury\\fill-ledger.ts": {
+    "mtime": 1780552118.6572773,
+    "hash": "1fee790ad0310f0e1f505b215bc1ad27"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\backend\\src\\websocket\\base-client.ts": {
+    "mtime": 1780325415.1115186,
+    "hash": "57ef3b8f43a694077dc8dbd844e5dd98"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\frontend\\next-env.d.ts": {
+    "mtime": 1780317560.2477806,
+    "hash": "c68600c0eb0d34c34bfc0f4b2547e31f"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\frontend\\next.config.ts": {
+    "mtime": 1780316051.5232995,
+    "hash": "3eafe577f9cde0b0ecc6ffe1613f1432"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\frontend\\postcss.config.mjs": {
+    "mtime": 1780316083.3527472,
+    "hash": "8d63bd8dfae24158e9f7294120ec3b0b"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\frontend\\tailwind.config.ts": {
+    "mtime": 1780316069.3258078,
+    "hash": "e3c7343484e86f989bff2548c78e81f0"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\frontend\\src\\app\\layout.tsx": {
+    "mtime": 1780319453.2628639,
+    "hash": "cee27e789fb3cedcb21f2ef798d49cb3"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\frontend\\src\\app\\page.tsx": {
+    "mtime": 1780551940.9339006,
+    "hash": "61639989b87818018c79e2cacdfff3ea"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\frontend\\src\\components\\AccountStatePanel.tsx": {
+    "mtime": 1780398761.4821732,
+    "hash": "74b26bd68220e30020f2f1ee73fdc29c"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\frontend\\src\\components\\EventLog.tsx": {
+    "mtime": 1780319323.3119879,
+    "hash": "0da8378e1c9210b55b449c7c0b4d5aaa"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\frontend\\src\\components\\ExchangeCard.tsx": {
+    "mtime": 1780316136.531272,
+    "hash": "a9a8a41aa72fd0d77a18937e3e172616"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\frontend\\src\\components\\ExecutionPanel.tsx": {
+    "mtime": 1780571382.7562788,
+    "hash": "7bd6235023c41fc90c1ffc855fbe7e4d"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\frontend\\src\\components\\SessionPanel.tsx": {
+    "mtime": 1780399016.9866471,
+    "hash": "04fe3783ab4feae14be9f5d54d31b35c"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\frontend\\src\\components\\SystemHeader.tsx": {
+    "mtime": 1780319461.0207193,
+    "hash": "2d4bc3e3fa14169ce01b6606ebc0dc65"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\frontend\\src\\components\\TreasuryPanel.tsx": {
+    "mtime": 1780485795.9395862,
+    "hash": "f91d1514fccbcdda1f1f195c68aee727"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\frontend\\src\\hooks\\useSystemState.ts": {
+    "mtime": 1780316112.8772578,
+    "hash": "c43fbfab5ba20fa37439e44f019dd70f"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\frontend\\src\\types\\global.d.ts": {
+    "mtime": 1780319487.7757838,
+    "hash": "23508b5f7e96451d0c6bc2a1ba21519d"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\frontend\\src\\types\\index.ts": {
+    "mtime": 1780551881.3057628,
+    "hash": "5857acc8e9087d26ff663443afd55b62"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\packages\\config\\src\\index.ts": {
+    "mtime": 1780485288.505598,
+    "hash": "dbd8369b0eb62986f89a40c9319e6be6"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\packages\\logger\\src\\index.ts": {
+    "mtime": 1780307431.610312,
+    "hash": "9090c199c4930d6699c67159200d0e34"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\packages\\shared-types\\src\\exchange.ts": {
+    "mtime": 1780312832.9844637,
+    "hash": "b015ce39f3ce64853cbe45cd600138c1"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\packages\\shared-types\\src\\execution.ts": {
+    "mtime": 1780554200.1242144,
+    "hash": "631629116a5818e7a3914b85f93717e5"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\packages\\shared-types\\src\\index.ts": {
+    "mtime": 1780326517.4788785,
+    "hash": "1c0707c1c0257e96dee71d4799a99360"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\packages\\shared-types\\src\\market.ts": {
+    "mtime": 1780307265.4616404,
+    "hash": "06fd1f4b2b51e322b24e25de83a7e8f9"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\packages\\shared-types\\src\\modes.ts": {
+    "mtime": 1780312793.481353,
+    "hash": "11fd5ac293c6fbd947dcab04ccf3f3b3"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\packages\\shared-types\\src\\reconciliation.ts": {
+    "mtime": 1780326466.427698,
+    "hash": "edf10fd470af3c4cda90d2c62d7e8a9b"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\packages\\shared-types\\src\\treasury.ts": {
+    "mtime": 1780485258.595402,
+    "hash": "2b24484b9dbf3c22cbf3c6caece840da"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\docker-compose.override.yml": {
+    "mtime": 1780388093.7437758,
+    "hash": "0181528f2d276ddff9a161c74a233126"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\docker-compose.yml": {
+    "mtime": 1780387929.234545,
+    "hash": "7c4048797aa560eb4ba621b541f4ffea"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\pnpm-workspace.yaml": {
+    "mtime": 1780316434.3320158,
+    "hash": "ba79bc0be7bb3e7da5ff9ea4073e4822"
+  },
+  "C:\\Users\\abdut\\OneDrive\\Desktop\\ZIG Treasury\\README.md": {
+    "mtime": 1780572202.7218275,
+    "hash": "f6e523519362b9a6eb0c14a270dbf3aa"
+  }
+}

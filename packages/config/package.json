@@ -1,0 +1,27 @@
+{
+  "name": "@zig/config",
+  "version": "1.0.0",
+  "private": true,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test:env": "pnpm --dir ../../backend exec tsx ../packages/config/src/index.test.ts",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "dotenv": "^16.0.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0"
+  }
+}

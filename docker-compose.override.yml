@@ -1,0 +1,13 @@
+# Local development overrides — auto-merged by `docker compose up`.
+# Binds Postgres and Redis to localhost ONLY (127.0.0.1) so the host-run
+# backend (npm run dev) can reach them during development.
+# This file is NOT used in production deploys (use -f docker-compose.yml explicitly).
+
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:15432:5432"
+
+  redis:
+    ports:
+      - "127.0.0.1:6379:6379"

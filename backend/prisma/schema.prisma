@@ -1,0 +1,168 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ── Operational Mode History ───────────────────────────────────────────────────
+
+model ModeTransition {
+  id          String   @id @default(cuid())
+  fromMode    String
+  toMode      String
+  reason      String
+  triggeredBy String
+  timestamp   DateTime @default(now())
+
+  @@map("mode_transitions")
+}
+
+// ── Balance Snapshots (reconciliation) ────────────────────────────────────────
+
+model BalanceSnapshot {
+  id        String   @id @default(cuid())
+  exchange  String
+  asset     String
+  available Decimal  @db.Decimal(30, 10)
+  locked    Decimal  @db.Decimal(30, 10)
+  total     Decimal  @db.Decimal(30, 10)
+  fetchedAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([exchange, asset, fetchedAt])
+  @@map("balance_snapshots")
+}
+
+// ── Orders (local mirror of exchange state) ────────────────────────────────────
+
+model Order {
+  id              String   @id @default(cuid())
+  exchange        String
+  exchangeOrderId String   @unique
+  clientOrderId   String   @unique
+  symbol          String
+  side            String
+  price           Decimal  @db.Decimal(30, 10)
+  size            Decimal  @db.Decimal(30, 10)
+  filledSize      Decimal  @db.Decimal(30, 10) @default(0)
+  remainingSize   Decimal  @db.Decimal(30, 10)
+  status          String
+  createdAt       DateTime
+  updatedAt       DateTime
+  syncedAt        DateTime @default(now())
+
+  @@index([exchange, symbol, status])
+  @@index([clientOrderId])
+  @@map("orders")
+}
+
+// ── Fills ──────────────────────────────────────────────────────────────────────
+
+model Fill {
+  id            String   @id @default(cuid())
+  exchange      String
+  fillId        String   @unique
+  orderId       String
+  clientOrderId String
+  symbol        String
+  side          String
+  price         Decimal  @db.Decimal(30, 10)
+  size          Decimal  @db.Decimal(30, 10)
+  fee           Decimal  @db.Decimal(30, 10)
+  feeAsset      String
+  filledAt      DateTime
+  syncedAt      DateTime @default(now())
+
+  @@index([exchange, symbol, filledAt])
+  @@index([clientOrderId])
+  @@map("fills")
+}
+
+// ── Reconciliation Reports ─────────────────────────────────────────────────────
+
+model ReconciliationReport {
+  id                   String   @id @default(cuid())
+  exchange             String
+  status               String   // MATCH | SOFT_DRIFT | HARD_DRIFT | CRITICAL_DRIFT
+  issues               Json     @default("[]") // DriftIssue[]
+  requiresExecutionHalt Boolean @default(false)
+  repaired             Boolean  @default(false)
+  timestamp            DateTime
+  createdAt            DateTime @default(now())
+
+  @@index([exchange, timestamp])
+  @@index([status])
+  @@map("reconciliation_reports")
+}
+
+// ── Encrypted exchange credentials (AES-256-GCM at rest) ───────────────────────
+// Raw keys NEVER stored. Only ciphertext + iv + authTag. Decrypted in-memory
+// by SessionManager during an active session, never written back in plaintext.
+
+model ExchangeCredential {
+  id            String   @id @default(cuid())
+  exchange      String   @unique // one credential set per exchange
+  label         String   @default("")
+  keyCiphertext String
+  keyIv         String
+  keyAuthTag    String
+  secretCiphertext String
+  secretIv      String
+  secretAuthTag String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@map("exchange_credentials")
+}
+
+// ── Treasury State (active vs reserve inventory — never collapsed) ─────────────
+
+model TreasuryState {
+  id                String   @id @default(cuid())
+  baseAsset         String
+  quoteAsset        String
+  totalBase         Decimal  @db.Decimal(30, 10) @default(0)
+  activeAmount      Decimal  @db.Decimal(30, 10)
+  reserveAmount     Decimal  @db.Decimal(30, 10)
+  reserveFloor      Decimal  @db.Decimal(30, 10) @default(0)
+  avgCost           Decimal  @db.Decimal(30, 10) @default(0)
+  realizedPnlUsdt   Decimal  @db.Decimal(30, 10) @default(0)
+  unrealizedPnlUsdt Decimal  @db.Decimal(30, 10) @default(0)
+  totalFeesUsdt     Decimal  @db.Decimal(30, 10) @default(0)
+  markPrice         Decimal  @db.Decimal(30, 10) @default(0)
+  inventoryValueUsdt Decimal @db.Decimal(30, 10) @default(0)
+  fillCount         Int      @default(0)
+  snapshotAt        DateTime @default(now())
+
+  @@index([snapshotAt])
+  @@map("treasury_state")
+}
+
+// ── Managed Orders (pipeline orders + lifecycle — recovery baseline) ───────────
+// Only REAL orders persist here; paper orders are in-memory simulation only.
+// On restart these are reloaded and reconciled against exchange truth.
+
+model ManagedOrder {
+  id              String   @id @default(cuid())
+  clientOrderId   String   @unique
+  requestId       String
+  exchange        String
+  symbol          String
+  side            String
+  price           Decimal  @db.Decimal(30, 10)
+  quantity        Decimal  @db.Decimal(30, 10)
+  filledQuantity  Decimal  @db.Decimal(30, 10) @default(0)
+  status          String
+  source          String
+  reason          String
+  exchangeOrderId String?
+  createdAt       DateTime
+  updatedAt       DateTime
+
+  @@index([status])
+  @@index([exchange, symbol])
+  @@map("managed_orders")
+}
