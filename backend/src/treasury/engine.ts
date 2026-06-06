@@ -28,6 +28,7 @@ export class TreasuryEngine {
 
   private readonly fills = new Map<string, ExchangeFill>();
   private snapshotTimer: NodeJS.Timeout | null = null;
+  private snapshotsDisabled = false;
 
   constructor(prisma: PrismaClient | null, opts: TreasuryEngineOptions, log: Logger) {
     this.prisma = prisma;
@@ -69,6 +70,7 @@ export class TreasuryEngine {
   // Persist a durable treasury snapshot (history graph / audit baseline).
   async snapshot(markPrice: number | null): Promise<void> {
     if (!this.prisma) return;
+    if (this.snapshotsDisabled) return;
     const t = this.derive(markPrice);
     try {
       await this.prisma.treasuryState.create({
@@ -89,6 +91,11 @@ export class TreasuryEngine {
         },
       });
     } catch (err) {
+      if (this.isMissingTable(err)) {
+        this.snapshotsDisabled = true;
+        this.log.warn("Treasury state table missing - durable snapshots disabled for this process");
+        return;
+      }
       this.log.warn({ err }, "Failed to persist treasury snapshot");
     }
   }
@@ -105,5 +112,14 @@ export class TreasuryEngine {
       clearInterval(this.snapshotTimer);
       this.snapshotTimer = null;
     }
+  }
+
+  private isMissingTable(err: unknown): boolean {
+    return (
+      typeof err === "object" &&
+      err !== null &&
+      "code" in err &&
+      (err as { code?: string }).code === "P2021"
+    );
   }
 }
