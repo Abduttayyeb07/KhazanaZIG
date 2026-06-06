@@ -62,26 +62,39 @@ export class FillLedger {
   // Load the full fill history (optionally for one exchange), chronological.
   async load(exchange?: Exchange): Promise<ExchangeFill[]> {
     if (!this.prisma) return [];
-    const rows = await this.prisma.fill.findMany({
-      where: exchange ? { exchange } : undefined,
-      orderBy: { filledAt: "asc" },
-    });
-    return rows.map((r) => ({
-      exchange: r.exchange as Exchange,
-      fillId: r.fillId,
-      orderId: r.orderId,
-      clientOrderId: r.clientOrderId,
-      symbol: r.symbol,
-      side: r.side as "buy" | "sell",
-      price: Number(r.price),
-      size: Number(r.size),
-      fee: Number(r.fee),
-      feeAsset: r.feeAsset,
-      filledAt: r.filledAt.getTime(),
-    }));
+    try {
+      const rows = await this.prisma.fill.findMany({
+        where: exchange ? { exchange } : undefined,
+        orderBy: { filledAt: "asc" },
+      });
+      return rows.map((r) => ({
+        exchange: r.exchange as Exchange,
+        fillId: r.fillId,
+        orderId: r.orderId,
+        clientOrderId: r.clientOrderId,
+        symbol: r.symbol,
+        side: r.side as "buy" | "sell",
+        price: Number(r.price),
+        size: Number(r.size),
+        fee: Number(r.fee),
+        feeAsset: r.feeAsset,
+        filledAt: r.filledAt.getTime(),
+      }));
+    } catch (err) {
+      if (isMissingTable(err)) {
+        this.log.warn({ exchange }, "Fill ledger table missing - starting with empty volatile ledger");
+        return [];
+      }
+      this.log.warn({ err, exchange }, "Failed to load fill ledger - starting with empty volatile ledger");
+      return [];
+    }
   }
 }
 
 function isUniqueViolation(err: unknown): boolean {
   return typeof err === "object" && err !== null && "code" in err && (err as { code: string }).code === "P2002";
+}
+
+function isMissingTable(err: unknown): boolean {
+  return typeof err === "object" && err !== null && "code" in err && (err as { code: string }).code === "P2021";
 }
