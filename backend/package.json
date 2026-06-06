@@ -4,7 +4,8 @@
   "private": true,
   "main": "./dist/main.js",
   "scripts": {
-    "build": "tsc",
+    "build": "node esbuild.config.mjs",
+    "build:tsc": "tsc",
     "dev": "tsx watch src/main.ts",
     "start": "node dist/main.js",
     "typecheck": "tsc --noEmit",
@@ -21,6 +22,8 @@
     "@zig/logger": "workspace:*",
     "@zig/shared-types": "workspace:*",
     "axios": "^1.7.0",
+    "dotenv": "^16.0.0",
+    "pino": "^9.0.0",
     "protobufjs": "^7.4.0",
     "ws": "^8.18.0",
     "zod": "^3.23.0"
@@ -28,6 +31,7 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/ws": "^8.5.0",
+    "esbuild": "^0.24.0",
     "prisma": "^5.22.0",
     "tsx": "^4.15.0",
     "typescript": "^5.5.0"

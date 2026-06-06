@@ -6,3 +6,4 @@ dist/
 .turbo/
 .DS_Store
 prisma/migrations/
+graphify-out

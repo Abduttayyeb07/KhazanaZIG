@@ -12,10 +12,9 @@ WORKDIR /app
 
 COPY . .
 RUN pnpm install --no-frozen-lockfile
-RUN pnpm --filter @zig/shared-types build && \
-    pnpm --filter @zig/logger         build && \
-    pnpm --filter @zig/config         build && \
-    pnpm --filter @zig/core-engine    build
+# esbuild bundles the engine into dist/main.js, inlining the @zig/* workspace
+# packages from source — no cross-package tsc resolution, no symlink dependence.
+RUN pnpm --filter @zig/core-engine build
 
 FROM node:22-slim@sha256:7af03b14a13c8cdd38e45058fd957bf00a72bbe17feac43b1c15a689c029c732 AS runner
 RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates && rm -rf /var/lib/apt/lists/*
