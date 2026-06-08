@@ -55,24 +55,35 @@ export class PaperSoak {
   private readonly reporter: SoakReporter;
   private readonly driver: HarvestDriver;
   private readonly d: PaperSoakDeps;
+  readonly runId: string;
 
   constructor(deps: PaperSoakDeps) {
     this.d = deps;
     const { cfg, settings, log, tg, markFn } = deps;
+    this.runId = makeRunId();
 
     this.account = new VirtualAccount(
       {
         exchange: settings.exchange,
+        symbol: cfg.TRADING_SYMBOL,
         baseAsset: cfg.BASE_ASSET,
         quoteAsset: cfg.QUOTE_ASSET,
         reserveFloor: cfg.RESERVE_FLOOR,
         startZig: settings.virtualZig,
         startUsdt: settings.virtualUsdt,
-        takerFeeBps: cfg.SOAK_TAKER_FEE_BPS,
+        takerFeeBps: cfg.PAPER_TAKER_FEE_BPS,
+        runId: this.runId,
+        rebuyDistanceBps: cfg.MIN_REBUY_DISTANCE_BPS,
       },
       log
     );
-    this.reporter = new SoakReporter(tg, this.account, markFn, log);
+    this.reporter = new SoakReporter(
+      tg,
+      this.account,
+      markFn,
+      { runId: this.runId, summaryMs: cfg.TG_FILL_SUMMARY_INTERVAL_SECONDS * 1_000 },
+      log
+    );
     this.driver = new HarvestDriver(
       deps.stateEngine,
       deps.pipeline,
@@ -83,11 +94,15 @@ export class PaperSoak {
         symbol: cfg.TRADING_SYMBOL,
         exchange: settings.exchange,
         minSellProfitBps: cfg.MIN_SELL_PROFIT_BPS,
-        minRebuyDistanceBps: cfg.MIN_REBUY_DISTANCE_BPS,
         minOrderZig: cfg.MIN_ORDER_ZIG,
         maxOrderActivePct: cfg.MAX_ORDER_ACTIVE_PCT,
-        buySlicePct: settings.buySlicePct,
         tickMs: settings.tickSeconds * 1_000,
+        sellCooldownMs: cfg.SELL_COOLDOWN_SECONDS * 1_000,
+        buyCooldownMs: cfg.BUY_COOLDOWN_SECONDS * 1_000,
+        sellBucketBps: cfg.SELL_BUCKET_BPS,
+        buyBucketBps: cfg.BUY_BUCKET_BPS,
+        rejectBackoffMs: cfg.REJECT_BACKOFF_SECONDS * 1_000,
+        maxUnrecoveredActivePct: cfg.MAX_UNRECOVERED_ACTIVE_PCT,
       },
       log
     );
@@ -114,12 +129,14 @@ export class PaperSoak {
       "Entry cost": entryCost,
       "Tick (s)": settings.tickSeconds,
     });
+    this.reporter.start();
     this.driver.start();
-    log.warn({ exchange: settings.exchange }, "PAPER SOAK RUNNING — virtual money, real rules");
+    log.warn({ exchange: settings.exchange, runId: this.runId }, "PAPER SOAK RUNNING — virtual money, real rules");
   }
 
   stop(): void {
     this.driver.stop();
+    this.reporter.stop();
   }
 
   statusText(): string {
@@ -170,4 +187,10 @@ export class PaperSoak {
 
 function fmt(n: number): string {
   return n.toLocaleString("en-US", { maximumFractionDigits: 2 });
+}
+
+function makeRunId(): string {
+  const d = new Date();
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `paper-run-${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}-${p(d.getUTCHours())}${p(d.getUTCMinutes())}${p(d.getUTCSeconds())}`;
 }

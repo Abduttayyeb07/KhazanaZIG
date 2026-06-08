@@ -20,16 +20,28 @@ export type PriceProvider = (exchange: Exchange) => TopOfBook | null;
 // filled on tick() when the market crosses the limit. Cancels resting orders.
 // ──────────────────────────────────────────────────────────────────────────────
 
+export interface PaperRealism {
+  slippageBps?: number;       // adverse price move on fill (0 = perfect)
+  fillProbability?: number;   // chance a marketable order actually fills this tick (1 = always)
+  rng?: () => number;         // injectable for deterministic tests; default Math.random
+}
+
 export class PaperEngine implements ExecutionAdapter {
   private readonly onEvent: EventSink;
   private readonly price: PriceProvider;
   private readonly log: Logger;
   private readonly resting = new Map<string, ManagedOrder>();
+  private readonly slippageBps: number;
+  private readonly fillProbability: number;
+  private readonly rng: () => number;
 
-  constructor(onEvent: EventSink, price: PriceProvider, log: Logger) {
+  constructor(onEvent: EventSink, price: PriceProvider, log: Logger, realism: PaperRealism = {}) {
     this.onEvent = onEvent;
     this.price = price;
     this.log = log.child({ module: "paper-engine" });
+    this.slippageBps = realism.slippageBps ?? 0;
+    this.fillProbability = realism.fillProbability ?? 1;
+    this.rng = realism.rng ?? Math.random;
   }
 
   async placeOrder(order: ManagedOrder): Promise<PlaceAck> {
@@ -37,10 +49,10 @@ export class PaperEngine implements ExecutionAdapter {
     // Ack + OPEN, exactly like a real exchange accepting a resting limit order.
     this.onEvent(this.openEvent(order, exchangeOrderId));
 
-    if (this.isMarketable(order)) {
+    if (this.isMarketable(order) && this.fillsThisTick()) {
       this.fill(order, order.quantity - order.filledQuantity, exchangeOrderId);
     } else {
-      this.resting.set(order.clientOrderId, order);
+      this.resting.set(order.clientOrderId, order); // not marketable, or fill probability missed → rest & retry
     }
     return { accepted: true, exchangeOrderId };
   }
@@ -60,11 +72,22 @@ export class PaperEngine implements ExecutionAdapter {
   // Called on each market update — fills resting orders whose limit has crossed.
   tick(): void {
     for (const order of [...this.resting.values()]) {
-      if (this.isMarketable(order)) {
+      if (this.isMarketable(order) && this.fillsThisTick()) {
         this.resting.delete(order.clientOrderId);
         this.fill(order, order.quantity - order.filledQuantity, order.exchangeOrderId ?? `PAPER-${order.clientOrderId}`);
       }
     }
+  }
+
+  // Probabilistic fill — a marketable order only fills `fillProbability` of the time.
+  private fillsThisTick(): boolean {
+    return this.fillProbability >= 1 || this.rng() < this.fillProbability;
+  }
+
+  // Apply adverse slippage to the execution price (worse for us on both sides).
+  private slip(side: ManagedOrder["side"], price: number): number {
+    if (this.slippageBps <= 0) return price;
+    return side === "sell" ? price * (1 - this.slippageBps / 10_000) : price * (1 + this.slippageBps / 10_000);
   }
 
   // Test hook for the chaos harness: force a partial fill of `qty`.
@@ -90,7 +113,7 @@ export class PaperEngine implements ExecutionAdapter {
       exchange: order.exchange,
       exchangeOrderId,
       fillId: `PAPER-FILL-${order.clientOrderId}-${Date.now()}`,
-      fillPrice: order.price,
+      fillPrice: this.slip(order.side, order.price),
       fillQuantity: fillQty,
       fee: 0,
       feeAsset: "USDT",

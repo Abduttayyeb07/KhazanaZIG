@@ -12,6 +12,7 @@
     "clean": "rm -rf dist",
     "chaos": "tsx src/chaos/harness.ts",
     "test:risk": "tsx src/decision-gate/risk-engine.test.ts",
+    "test:soak": "tsx src/paper-soak/soak-v2.test.ts",
     "prisma:generate": "prisma generate",
     "prisma:push": "prisma db push",
     "postinstall": "prisma generate"

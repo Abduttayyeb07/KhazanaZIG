@@ -7,3 +7,4 @@ dist/
 .DS_Store
 prisma/migrations/
 graphify-out
+docs

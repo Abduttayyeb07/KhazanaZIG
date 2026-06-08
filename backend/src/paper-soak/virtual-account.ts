@@ -2,6 +2,7 @@ import type { Logger } from "@zig/logger";
 import type { Exchange, ExchangeBalance, ExchangeFill, DerivedTreasury } from "@zig/shared-types";
 import { deriveTreasury } from "../treasury/derive.js";
 import type { StateEngine } from "../state-engine/index.js";
+import { CycleTracker, type CycleMetrics, type HarvestCycle } from "./cycle-tracker.js";
 
 // ── Virtual account for the paper soak ──────────────────────────────────────────
 //
@@ -15,25 +16,31 @@ import type { StateEngine } from "../state-engine/index.js";
 
 export interface VirtualAccountOptions {
   exchange: Exchange;
+  symbol: string;
   baseAsset: string;
   quoteAsset: string;
   reserveFloor: number;
   startZig: number;
   startUsdt: number;
   takerFeeBps: number;
+  runId: string;
+  rebuyDistanceBps: number;
 }
 
 export class VirtualAccount {
   private zig: number;
   private usdt: number;
+  private startingActiveZig = 0;
   private readonly fills: ExchangeFill[] = [];
   private readonly opts: VirtualAccountOptions;
+  private readonly tracker: CycleTracker;
   private readonly log: Logger;
 
   constructor(opts: VirtualAccountOptions, log: Logger) {
     this.opts = opts;
     this.zig = opts.startZig;
     this.usdt = opts.startUsdt;
+    this.tracker = new CycleTracker(opts.runId, opts.exchange, opts.symbol, opts.rebuyDistanceBps);
     this.log = log.child({ module: "virtual-account" });
   }
 
@@ -54,6 +61,7 @@ export class VirtualAccount {
         filledAt: Date.now(),
       });
     }
+    this.startingActiveZig = this.activeZig;
     this.publishBalances(stateEngine);
     this.log.info(
       { zig: this.zig, usdt: this.usdt, entryCost, reserveFloor: this.opts.reserveFloor, active: this.activeZig },
@@ -84,6 +92,26 @@ export class VirtualAccount {
     return this.fills.slice(-limit).reverse();
   }
 
+  // ── Cycle tracking surface (drives driver gates + reporting) ──────────────
+  get startingActive(): number {
+    return this.startingActiveZig;
+  }
+  get unrecoveredZig(): number {
+    return this.tracker.unrecoveredTotal();
+  }
+  openCyclesForRebuy(ask: number): HarvestCycle[] {
+    return this.tracker.openCyclesForRebuy(ask);
+  }
+  sellBucketOccupied(price: number, bps: number): boolean {
+    return this.tracker.sellBucketOccupied(price, bps);
+  }
+  cycleMetrics(mark: number | null): CycleMetrics {
+    return this.tracker.metrics(mark);
+  }
+  cycles(): readonly HarvestCycle[] {
+    return this.tracker.all();
+  }
+
   // Apply a simulated paper fill: move virtual cash/inventory and record it for
   // cost-basis derivation. A synthetic taker fee makes paper PnL more honest.
   applyPaperFill(
@@ -104,9 +132,10 @@ export class VirtualAccount {
     if (this.zig < 0) this.zig = 0;
     if (this.usdt < 0) this.usdt = 0;
 
+    const fillId = `PAPER-LEDGER-${at}-${Math.random().toString(36).slice(2, 8)}`;
     this.fills.push({
       exchange: this.opts.exchange,
-      fillId: `PAPER-LEDGER-${at}-${Math.random().toString(36).slice(2, 8)}`,
+      fillId,
       orderId: "PAPER",
       clientOrderId: "PAPER",
       symbol: "",
@@ -117,6 +146,11 @@ export class VirtualAccount {
       feeAsset: this.opts.quoteAsset,
       filledAt: at,
     });
+
+    // Drive the harvest cycles: a sell opens a cycle, a buy FIFO-recovers cycles.
+    if (side === "sell") this.tracker.onSell(fillId, size, price, feeUsdt);
+    else this.tracker.onBuy(fillId, size, price, feeUsdt);
+
     this.publishBalances(stateEngine);
   }
 

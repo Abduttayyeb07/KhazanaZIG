@@ -114,7 +114,8 @@ async function main() {
       const m = stateEngine.getState().market[ex];
       return m && m.bestBid !== null && m.bestAsk !== null ? { bestBid: m.bestBid, bestAsk: m.bestAsk } : null;
     },
-    log
+    log,
+    { slippageBps: cfg.PAPER_SLIPPAGE_BPS, fillProbability: cfg.PAPER_FILL_PROBABILITY }
   );
   // realAdapter is null until Phase 4 Week 3 — NORMAL mode will reject placement.
   const pipeline = new ExecutionPipeline(

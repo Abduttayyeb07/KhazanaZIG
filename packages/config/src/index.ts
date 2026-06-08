@@ -82,7 +82,26 @@ const EnvSchema = z.object({
   SOAK_ENTRY_COST: z.coerce.number().nonnegative().default(0), // cost basis of opening ZIG; 0 = use market mid at boot
   SOAK_TICK_SECONDS: z.coerce.number().int().positive().default(30), // how often the driver evaluates
   SOAK_BUY_SLICE_PCT: nonnegativePct.default(0.2),  // fraction of USDT per rebuy intent
-  SOAK_TAKER_FEE_BPS: nonnegativeNumber.default(10), // synthetic taker fee for realistic paper PnL
+
+  // ── Paper soak v2 — discipline, cycles, realism ───────────────────────────
+  // Cooldowns + buckets stop machine-gun trading in the same price zone.
+  SELL_COOLDOWN_SECONDS: z.coerce.number().int().positive().default(120),
+  BUY_COOLDOWN_SECONDS: z.coerce.number().int().positive().default(120),
+  SELL_BUCKET_BPS: positiveNumber.default(25),
+  BUY_BUCKET_BPS: positiveNumber.default(25),
+  REJECT_BACKOFF_SECONDS: z.coerce.number().int().nonnegative().default(300),
+  // Cap on how much active inventory may sit sold-but-not-rebought.
+  // MAX_ACTIVE_DEPLOYED_PCT is a compatibility alias; the authoritative check uses
+  // MAX_UNRECOVERED_ACTIVE_PCT (unrecoveredSold >= startingActive × pct → pause sells).
+  MAX_ACTIVE_DEPLOYED_PCT: positivePct.default(0.25),
+  MAX_UNRECOVERED_ACTIVE_PCT: positivePct.default(0.25),
+  // Paper fill realism (less optimistic than v1).
+  PAPER_TAKER_FEE_BPS: nonnegativeNumber.default(10),
+  PAPER_SLIPPAGE_BPS: nonnegativeNumber.default(5),
+  PAPER_FILL_PROBABILITY: positivePct.default(0.75),
+  // Telegram throttling — summaries instead of per-fill spam.
+  TG_FILL_SUMMARY_INTERVAL_SECONDS: z.coerce.number().int().positive().default(900),
+  TG_REJECT_SUMMARY_INTERVAL_SECONDS: z.coerce.number().int().positive().default(900),
 
   // ── Control-plane security ──────────────────────────────────────────────
   // API bind host + port. 0.0.0.0 is reachable from the network; set to
