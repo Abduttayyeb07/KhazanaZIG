@@ -13,6 +13,8 @@
     "chaos": "tsx src/chaos/harness.ts",
     "test:risk": "tsx src/decision-gate/risk-engine.test.ts",
     "test:soak": "tsx src/paper-soak/soak-v2.test.ts",
+    "test:zone": "tsx src/zone-manager/zone.test.ts",
+    "test:acc": "tsx src/accumulation/accumulation.test.ts",
     "prisma:generate": "prisma generate",
     "prisma:push": "prisma db push",
     "postinstall": "prisma generate"

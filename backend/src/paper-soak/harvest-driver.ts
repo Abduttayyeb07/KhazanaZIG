@@ -7,30 +7,27 @@ import type { OrderRegistry } from "../execution-engine/registry.js";
 import type { VirtualAccount } from "./virtual-account.js";
 import type { SoakReporter } from "./reporter.js";
 import { priceBucketId } from "./cycle-tracker.js";
+import type { AllowedActions } from "../zone-manager/zone-types.js";
+import type { AccumulationEngine, AccTickContext } from "../accumulation/accumulation-engine.js";
 
-// ── Cost-band harvest driver (v2 — disciplined) ─────────────────────────────────
+// ── Soak driver (zone-aware, v3) ────────────────────────────────────────────────
 //
-// Originates intents and feeds them through the real Risk + Sizing engines.
-// v2 discipline (driver-side gates, before the pipeline):
-//   • cooldown      — min time between same-side fills (no machine-gun)
-//   • price bucket  — don't re-trade the same tiny price zone
-//   • deployment cap— pause sells once too much active inventory is sold-but-unrebought
-//   • reject backoff— stop re-emitting an intent that keeps getting rejected
-//   • cycle-bound buys — only buy to recover an OPEN sell cycle whose target price hit
+// Originates intents in strict tick order (manage obligations → grow treasury):
+//   1. harvest sell   2. harvest rebuy   3. accumulation recovery   4. accumulation buy
+// Only ONE action submits per tick (sequential, one order in flight).
 //
-// Market-quality gates (CHAOTIC, stale book, spread, liquidity, min order, daily
-// caps, reconciliation) remain the RiskEngine's job — not duplicated here.
-// SAFETY: refuses to act unless the engine is in PAPER_MODE.
-// ────────────────────────────────────────────────────────────────────────────────
+// Sells are ZONE-gated (no avgCost anchor — fixes the "idle below cost" trap);
+// harvest profit comes from the sell→rebuy spread. Zone C / above harvest at
+// REDUCED aggression. Everything still flows through RiskEngine/Sizing.
+// SAFETY: refuses to act outside PAPER_MODE.
+// ──────────────────────────────────────────────────────────────────────────────
 
 export interface HarvestParams {
   symbol: string;
   exchange: Exchange;
-  minSellProfitBps: number;
   minOrderZig: number;
   maxOrderActivePct: number;
   tickMs: number;
-  // v2
   sellCooldownMs: number;
   buyCooldownMs: number;
   sellBucketBps: number;
@@ -39,14 +36,19 @@ export interface HarvestParams {
   maxUnrecoveredActivePct: number;
 }
 
+export interface ZoneView {
+  allowed: AllowedActions;
+  aggression: "FULL" | "REDUCED";
+}
+
 interface Backoff {
   until: number;
   price: number;
 }
 
 export class HarvestDriver {
-  private sellCooldownUntil = 0;                       // global time floor between sells
-  private readonly buyBucketUntil = new Map<number, number>(); // per price-bucket buy lock (combines buy cooldown + buy bucket)
+  private sellCooldownUntil = 0;
+  private readonly buyBucketUntil = new Map<number, number>();
   private sellBackoff: Backoff | null = null;
   private buyBackoff: Backoff | null = null;
   private timer: NodeJS.Timeout | null = null;
@@ -59,6 +61,8 @@ export class HarvestDriver {
     private readonly account: VirtualAccount,
     private readonly reporter: SoakReporter,
     private readonly p: HarvestParams,
+    private readonly zone: () => ZoneView,
+    private readonly acc: AccumulationEngine | null,
     private readonly log: Logger
   ) {}
 
@@ -71,13 +75,12 @@ export class HarvestDriver {
     this.timer = null;
   }
 
-  // Public for tests; the interval calls this each tick.
   async tick(): Promise<void> {
     if (this.evaluating) return;
     this.evaluating = true;
     try {
       const state = this.stateEngine.getState();
-      if (state.mode !== "PAPER_MODE") return; // hard safety: never auto-trade outside paper
+      if (state.mode !== "PAPER_MODE") return; // hard safety
 
       const m = state.market[this.p.exchange];
       if (!m || m.bestBid === null || m.bestAsk === null) return;
@@ -85,51 +88,61 @@ export class HarvestDriver {
       const ask = m.bestAsk;
       const now = Date.now();
 
-      // One order in flight at a time — wait for the current paper order to resolve.
       const pending = this.registry.openOrders().filter((o) => o.paper && o.exchange === this.p.exchange).length;
-      if (pending > 0) return;
+      if (pending > 0) return; // one order in flight
 
-      // A meaningful price move clears a stale reject-backoff.
       this.maybeClearBackoff(bid, ask);
+      const { allowed, aggression } = this.zone();
 
-      // ── SELL evaluation ──────────────────────────────────────────────────
-      const avgCost = this.account.avgCost;
-      const active = this.account.activeZig;
-      const sellThreshold = avgCost > 0 ? avgCost * (1 + this.p.minSellProfitBps / 10_000) : Infinity;
-
-      const sellProfitable = avgCost > 0 && bid >= sellThreshold;
-      const sellCooldownOk = now >= this.sellCooldownUntil;
-      // Bucket occupancy: don't re-sell a zone that still has an OPEN cycle; frees
-      // when that cycle completes (so a post-rebuy profitable sell here is allowed).
-      const sellBucketOk = !this.account.sellBucketOccupied(bid, this.p.sellBucketBps);
-      const sellBackoffOk = !this.sellBackoff || now >= this.sellBackoff.until;
-      const sellSizeOk = active >= this.p.minOrderZig;
-
-      if (sellProfitable && sellCooldownOk && sellBucketOk && sellBackoffOk && sellSizeOk) {
-        const maxUnrecovered = this.account.startingActive * this.p.maxUnrecoveredActivePct;
-        if (this.account.unrecoveredZig >= maxUnrecovered) {
-          this.reporter.intentBlocked("ACTIVE_DEPLOYMENT_CAP");
-        } else {
-          const desired = Math.max(active * this.p.maxOrderActivePct, this.p.minOrderZig);
-          await this.submit("sell", desired, bid, now);
-          return;
+      // ── 1. HARVEST SELL (zone-gated) ─────────────────────────────────────
+      if (allowed.harvestSell) {
+        const active = this.account.activeZig;
+        const cooldownOk = now >= this.sellCooldownUntil;
+        const bucketOk = !this.account.sellBucketOccupied(bid, this.p.sellBucketBps);
+        const backoffOk = !this.sellBackoff || now >= this.sellBackoff.until;
+        if (cooldownOk && bucketOk && backoffOk && active >= this.p.minOrderZig) {
+          if (this.account.unrecoveredZig >= this.account.startingActive * this.p.maxUnrecoveredActivePct) {
+            this.reporter.intentBlocked("ACTIVE_DEPLOYMENT_CAP");
+          } else {
+            const mult = aggression === "REDUCED" ? 0.5 : 1;
+            const desired = Math.max(active * this.p.maxOrderActivePct * mult, this.p.minOrderZig);
+            await this.submit("sell", desired, bid, now);
+            return;
+          }
         }
       }
 
-      // ── BUY evaluation (cycle-bound only) ────────────────────────────────
-      const usdt = this.account.usdtBalance;
-      const eligible = this.account.openCyclesForRebuy(ask);
-      if (eligible.length > 0 && usdt > 0) {
-        // Per-bucket buy lock = buy cooldown + buy bucket in one: a recovered zone is
-        // locked for BUY_COOLDOWN, but a DIFFERENT zone (distinct cycle) is free to
-        // recover immediately. Total buy volume stays bounded by the deployment cap.
-        const buyBucket = priceBucketId(ask, this.p.buyBucketBps);
-        const buyBucketOk = now >= (this.buyBucketUntil.get(buyBucket) ?? 0);
-        const buyBackoffOk = !this.buyBackoff || now >= this.buyBackoff.until;
-        const desired = eligible.reduce((s, c) => s + c.unrecoveredQty, 0); // never more than what's owed
-        if (buyBucketOk && buyBackoffOk && desired >= this.p.minOrderZig) {
-          await this.submit("buy", desired, ask, now);
+      // ── 2. HARVEST REBUY (zone-gated, cycle-bound) ───────────────────────
+      if (allowed.harvestRebuy) {
+        const usdt = this.account.usdtBalance;
+        const eligible = this.account.openCyclesForRebuy(ask);
+        if (eligible.length > 0 && usdt > 0) {
+          const buyBucket = priceBucketId(ask, this.p.buyBucketBps);
+          const buyBucketOk = now >= (this.buyBucketUntil.get(buyBucket) ?? 0);
+          const buyBackoffOk = !this.buyBackoff || now >= this.buyBackoff.until;
+          const desired = eligible.reduce((s, c) => s + c.unrecoveredQty, 0);
+          if (buyBucketOk && buyBackoffOk && desired >= this.p.minOrderZig) {
+            await this.submit("buy", desired, ask, now);
+            return;
+          }
         }
+      }
+
+      // ── 3 & 4. ACCUMULATION (recovery sell, then fresh buy) ──────────────
+      if (this.acc) {
+        const accCtx: AccTickContext = {
+          bid,
+          ask,
+          spreadBps: m.spreadBps ?? Number.POSITIVE_INFINITY,
+          liquidityUsdt: (m.askLiquidity ?? 0) * ask,
+          regime: m.volatilityRegime,
+          allowed,
+          usdtBalance: this.account.usdtBalance,
+          harvestRebuyReserve: this.account.harvestRebuyReserveUsdt,
+          now,
+        };
+        if (await this.acc.attemptRecoverySell(accCtx)) return;
+        await this.acc.attemptBuy(accCtx);
       }
     } catch (err) {
       this.log.warn({ err }, "Harvest tick failed");
@@ -157,13 +170,9 @@ export class HarvestDriver {
     if (result.risk) this.reporter.decision({ side, quantity, price }, result.risk);
 
     if (result.accepted) {
-      if (side === "sell") {
-        this.sellCooldownUntil = now + this.p.sellCooldownMs;
-      } else {
-        this.buyBucketUntil.set(priceBucketId(price, this.p.buyBucketBps), now + this.p.buyCooldownMs);
-      }
+      if (side === "sell") this.sellCooldownUntil = now + this.p.sellCooldownMs;
+      else this.buyBucketUntil.set(priceBucketId(price, this.p.buyBucketBps), now + this.p.buyCooldownMs);
     } else {
-      // Repeated-reject suppression: pause this side until backoff expires or price moves.
       const backoff: Backoff = { until: now + this.p.rejectBackoffMs, price };
       if (side === "sell") this.sellBackoff = backoff;
       else this.buyBackoff = backoff;

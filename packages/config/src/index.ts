@@ -17,6 +17,9 @@ const positivePct = z.coerce.number().gt(0).lte(1);
 const nonnegativePct = z.coerce.number().gte(0).lte(1);
 const positiveNumber = z.coerce.number().gt(0);
 const nonnegativeNumber = z.coerce.number().gte(0);
+const positivePrice = z.coerce.number().gt(0);
+// Env booleans: z.coerce.boolean() treats the string "false" as true, so parse explicitly.
+const boolFlag = (def: "true" | "false") => z.enum(["true", "false"]).default(def).transform((v) => v === "true");
 
 const EnvSchema = z.object({
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
@@ -103,6 +106,46 @@ const EnvSchema = z.object({
   TG_FILL_SUMMARY_INTERVAL_SECONDS: z.coerce.number().int().positive().default(900),
   TG_REJECT_SUMMARY_INTERVAL_SECONDS: z.coerce.number().int().positive().default(900),
 
+  // ── Zone Manager (operator-defined treasury zones) ────────────────────────
+  // Strategy anchors on the current market ZONE, not on unknown historical avg cost.
+  ZONE_MANAGER_ENABLED: boolFlag("true"),
+  ACTIVE_BAND_LOW: positivePrice.default(0.05),
+  ACTIVE_BAND_HIGH: positivePrice.default(0.075),
+  ZONE_A_LOW: positivePrice.default(0.045),
+  ZONE_A_HIGH: positivePrice.default(0.05),
+  ZONE_B_LOW: positivePrice.default(0.05),
+  ZONE_B_HIGH: positivePrice.default(0.06),
+  ZONE_C_LOW: positivePrice.default(0.06),
+  ZONE_C_HIGH: positivePrice.default(0.075),
+  ZONE_EVALUATION_INTERVAL_SECONDS: z.coerce.number().int().positive().default(60),
+  // Per-zone behavior toggles
+  ZONE_A_ACCUMULATION_ENABLED: boolFlag("true"),
+  ZONE_A_SELLS_ENABLED: boolFlag("false"),
+  ZONE_B_HARVEST_ENABLED: boolFlag("true"),
+  ZONE_B_ACCUMULATION_ENABLED: boolFlag("false"),
+  ZONE_C_HARVEST_ENABLED: boolFlag("true"),
+  ZONE_C_ACCUMULATION_ENABLED: boolFlag("false"),
+
+  // ── Controlled accumulation (buy deep weakness → recover principal → keep surplus ZIG)
+  ACCUMULATION_ENABLED: boolFlag("true"),
+  ACCUMULATION_TRANCHE_USDT: positiveNumber.default(1000),
+  MAX_ACCUMULATION_BUDGET_USDT_PCT: positivePct.default(0.3),
+  MAX_DAILY_ACCUMULATION_USDT_PCT: positivePct.default(0.1),
+  ACCUMULATION_COOLDOWN_SECONDS: z.coerce.number().int().positive().default(900),
+  ACCUMULATION_BUCKET_BPS: positiveNumber.default(100),
+  ACCUMULATION_MIN_LIQUIDITY_USDT: nonnegativeNumber.default(5000),
+  ACCUMULATION_MAX_SPREAD_BPS: positiveNumber.default(150),
+  ACCUMULATION_ALLOW_IN_HIGH_VOL: boolFlag("false"),
+  ACCUMULATION_ALLOW_IN_CHAOTIC: boolFlag("false"),
+  // Recovery
+  ACCUMULATION_RECOVERY_ENABLED: boolFlag("true"),
+  ACCUMULATION_RECOVERY_PROFIT_BPS: nonnegativeNumber.default(500),
+  ACCUMULATION_PRINCIPAL_RECOVERY_PCT: positivePct.default(1.0),
+  ACCUMULATION_KEEP_SURPLUS_ZIG: boolFlag("true"),
+  // Dry powder protection (USDT-side reserve floor)
+  MIN_USDT_RESERVE_FLOOR: nonnegativeNumber.default(5000),
+  MAX_TOTAL_USDT_DEPLOYED_PCT: positivePct.default(0.5),
+
   // ── Control-plane security ──────────────────────────────────────────────
   // API bind host + port. 0.0.0.0 is reachable from the network; set to
   // 127.0.0.1 when running behind a reverse proxy (recommended in prod).
@@ -117,13 +160,19 @@ const EnvSchema = z.object({
   // CORS allow-list for the dashboard origin. "*" only acceptable in local dev.
   DASHBOARD_ORIGIN: z.string().default("http://localhost:3000"),
 }).superRefine((env, ctx) => {
+  const bad = (path: string, message: string) => ctx.addIssue({ code: z.ZodIssueCode.custom, path: [path], message });
+
   if (!(env.LOW_VOL_ATR_PCT < env.NORMAL_VOL_ATR_PCT && env.NORMAL_VOL_ATR_PCT < env.HIGH_VOL_ATR_PCT)) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["LOW_VOL_ATR_PCT"],
-      message: "volatility ATR thresholds must satisfy LOW < NORMAL < HIGH",
-    });
+    bad("LOW_VOL_ATR_PCT", "volatility ATR thresholds must satisfy LOW < NORMAL < HIGH");
   }
+
+  // Zone bounds: each zone low<high, active band low<high, zones non-overlapping & ascending.
+  if (!(env.ACTIVE_BAND_LOW < env.ACTIVE_BAND_HIGH)) bad("ACTIVE_BAND_LOW", "ACTIVE_BAND_LOW must be < ACTIVE_BAND_HIGH");
+  if (!(env.ZONE_A_LOW < env.ZONE_A_HIGH)) bad("ZONE_A_LOW", "ZONE_A_LOW must be < ZONE_A_HIGH");
+  if (!(env.ZONE_B_LOW < env.ZONE_B_HIGH)) bad("ZONE_B_LOW", "ZONE_B_LOW must be < ZONE_B_HIGH");
+  if (!(env.ZONE_C_LOW < env.ZONE_C_HIGH)) bad("ZONE_C_LOW", "ZONE_C_LOW must be < ZONE_C_HIGH");
+  if (!(env.ZONE_A_HIGH <= env.ZONE_B_LOW)) bad("ZONE_A_HIGH", "ZONE_A_HIGH must be <= ZONE_B_LOW (zones must not overlap)");
+  if (!(env.ZONE_B_HIGH <= env.ZONE_C_LOW)) bad("ZONE_B_HIGH", "ZONE_B_HIGH must be <= ZONE_C_LOW (zones must not overlap)");
 });
 
 export function parseConfig(env: NodeJS.ProcessEnv) {

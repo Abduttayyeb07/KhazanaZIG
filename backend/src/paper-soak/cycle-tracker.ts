@@ -124,6 +124,12 @@ export class CycleTracker {
     return this.cycles.reduce((s, c) => s + c.unrecoveredQty, 0);
   }
 
+  // USDT earmarked to rebuy all open harvest cycles at their targets — accumulation
+  // must leave this untouched (harvest rebuys have priority on dry powder).
+  rebuyReserveUsdt(): number {
+    return this.cycles.reduce((s, c) => s + c.unrecoveredQty * c.rebuyTargetPrice, 0);
+  }
+
   // A price bucket is "occupied" while an OPEN cycle was sold in that bucket — so we
   // don't re-sell the same zone. It frees automatically when the cycle COMPLETES
   // (no longer open), which fixes the lastSellPrice trap: after a rebuy restores

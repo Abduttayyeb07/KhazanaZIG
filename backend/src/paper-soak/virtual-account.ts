@@ -99,6 +99,9 @@ export class VirtualAccount {
   get unrecoveredZig(): number {
     return this.tracker.unrecoveredTotal();
   }
+  get harvestRebuyReserveUsdt(): number {
+    return this.tracker.rebuyReserveUsdt();
+  }
   openCyclesForRebuy(ask: number): HarvestCycle[] {
     return this.tracker.openCyclesForRebuy(ask);
   }
@@ -119,8 +122,9 @@ export class VirtualAccount {
     size: number,
     price: number,
     at: number,
-    stateEngine: StateEngine
-  ): void {
+    stateEngine: StateEngine,
+    kind: "harvest" | "accumulation" = "harvest"
+  ): { fillId: string; feeUsdt: number } {
     const feeUsdt = price * size * (this.opts.takerFeeBps / 10_000);
     if (side === "buy") {
       this.zig += size;
@@ -147,11 +151,16 @@ export class VirtualAccount {
       filledAt: at,
     });
 
-    // Drive the harvest cycles: a sell opens a cycle, a buy FIFO-recovers cycles.
-    if (side === "sell") this.tracker.onSell(fillId, size, price, feeUsdt);
-    else this.tracker.onBuy(fillId, size, price, feeUsdt);
+    // Harvest fills drive the harvest cycles here; accumulation fills are routed to
+    // the AccumulationEngine by the caller (separate tracker) — balances + cost basis
+    // above are shared, cycle bookkeeping is not.
+    if (kind === "harvest") {
+      if (side === "sell") this.tracker.onSell(fillId, size, price, feeUsdt);
+      else this.tracker.onBuy(fillId, size, price, feeUsdt);
+    }
 
     this.publishBalances(stateEngine);
+    return { fillId, feeUsdt };
   }
 
   private publishBalances(stateEngine: StateEngine): void {

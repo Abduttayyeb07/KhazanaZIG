@@ -92,7 +92,7 @@ function makeState(bid: number, ask: number): SystemState {
   };
 }
 const baseParams: HarvestParams = {
-  symbol: "ZIGUSDT", exchange: "bybit", minSellProfitBps: 300, minOrderZig: 100,
+  symbol: "ZIGUSDT", exchange: "bybit", minOrderZig: 100,
   maxOrderActivePct: 0.05, tickMs: 1000, sellCooldownMs: 0, buyCooldownMs: 0,
   sellBucketBps: 25, buyBucketBps: 25, rejectBackoffMs: 9_999_999, maxUnrecoveredActivePct: 0.25,
 };
@@ -104,6 +104,7 @@ function harness(opts: {
   params?: Partial<HarvestParams>;
   avgCost?: number;
   sellOccupied?: boolean;
+  harvestSell?: boolean; // zone gate for sells (default true)
 }) {
   const submits: { side: string; qty: number; price: number }[] = [];
   const blocked: string[] = [];
@@ -121,7 +122,11 @@ function harness(opts: {
   const reporter = { decision: () => {}, intentBlocked: (r: string) => blocked.push(r) } as unknown as SoakReporter;
   let state = opts.state;
   const stateEngine = { getState: () => state } as unknown as StateEngine;
-  const driver = new HarvestDriver(stateEngine, pipeline, registry, account, reporter, { ...baseParams, ...opts.params }, log);
+  const zone = () => ({
+    allowed: { harvestSell: opts.harvestSell ?? true, harvestRebuy: true, accumulationBuy: false, accumulationRecoverySell: false },
+    aggression: "FULL" as const,
+  });
+  const driver = new HarvestDriver(stateEngine, pipeline, registry, account, reporter, { ...baseParams, ...opts.params }, zone, null, log);
   return { driver, submits, blocked, setState: (s: SystemState) => { state = s; } };
 }
 
@@ -167,13 +172,14 @@ function harness(opts: {
   }
 
   // Cycle-bound buy: no open cycle → no buy; open cycle at target → buy
+  // (sells suppressed via the zone gate so the rebuy path is exercised in isolation)
   {
-    const noCycle = harness({ state: makeState(0.049, 0.048) }); // bid below sell threshold; ask low
+    const noCycle = harness({ state: makeState(0.049, 0.048), harvestSell: false });
     await noCycle.driver.tick();
     ok("no cycle → no buy", noCycle.submits.length === 0, noCycle.submits.length);
 
     const cyc = { unrecoveredQty: 500 } as unknown as HarvestCycle;
-    const withCycle = harness({ state: makeState(0.049, 0.048), rebuyCycles: [cyc] });
+    const withCycle = harness({ state: makeState(0.049, 0.048), rebuyCycles: [cyc], harvestSell: false });
     await withCycle.driver.tick();
     ok("open cycle at target → buy", withCycle.submits.length === 1 && withCycle.submits[0].side === "buy", JSON.stringify(withCycle.submits));
     ok("buy qty = unrecovered (500)", withCycle.submits[0]?.qty === 500, withCycle.submits[0]?.qty);
@@ -182,7 +188,7 @@ function harness(opts: {
   // Buy cooldown (per-bucket): same zone locked after a buy
   {
     const cyc = { unrecoveredQty: 500 } as unknown as HarvestCycle;
-    const h = harness({ state: makeState(0.0479, 0.048), avgCost: 0.1, rebuyCycles: [cyc], params: { buyCooldownMs: 9_999_999 } });
+    const h = harness({ state: makeState(0.0479, 0.048), rebuyCycles: [cyc], params: { buyCooldownMs: 9_999_999 }, harvestSell: false });
     await h.driver.tick();                                   // buy zone 0.048 → locked
     await h.driver.tick();                                   // same zone → locked
     ok("buy cooldown: same bucket locked", h.submits.length === 1, h.submits.length);
@@ -191,9 +197,9 @@ function harness(opts: {
   // Buy bucket: a DIFFERENT zone (distinct cycle) is free to recover immediately
   {
     const cyc = { unrecoveredQty: 500 } as unknown as HarvestCycle;
-    const h = harness({ state: makeState(0.0479, 0.048), avgCost: 0.1, rebuyCycles: [cyc], params: { buyCooldownMs: 9_999_999 } });
+    const h = harness({ state: makeState(0.0479, 0.048), rebuyCycles: [cyc], params: { buyCooldownMs: 9_999_999 }, harvestSell: false });
     await h.driver.tick();                                   // buy zone A (0.048)
-    h.setState(makeState(0.0599, 0.06));                     // zone B (far); avgCost 0.1 → no sell
+    h.setState(makeState(0.0599, 0.06));                     // different bucket
     await h.driver.tick();
     ok("buy bucket: different zone allowed", h.submits.length === 2, h.submits.length);
   }

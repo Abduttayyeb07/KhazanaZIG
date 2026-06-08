@@ -2,6 +2,15 @@ import type { Logger } from "@zig/logger";
 import type { TelegramNotifier } from "../telegram/notifier.js";
 import type { RiskDecision } from "../decision-gate/risk-types.js";
 import type { VirtualAccount } from "./virtual-account.js";
+import type { AccBuyInfo, AccRecoveryInfo } from "../accumulation/accumulation-engine.js";
+import type { AccumulationMetrics } from "../accumulation/accumulation-types.js";
+
+export interface ReporterProviders {
+  runId: string;
+  summaryMs: number;
+  zoneLabel?: () => string | null;
+  accMetrics?: () => AccumulationMetrics | null;
+}
 
 // ── Soak reporter (v2 — throttled) ──────────────────────────────────────────────
 // v1 pushed every tiny fill → 1,856 messages. v2 AGGREGATES activity and flushes a
@@ -39,15 +48,21 @@ export class SoakReporter {
   private readonly log: Logger;
   private w = emptyWindow();      // current summary window (resets each flush)
   private cum = emptyWindow();    // cumulative over the whole run (for the run record)
+  private cumAccBuys = 0;
+  private cumAccRecoveries = 0;
   private startedAt = 0;
   private startSnapshot = "";
+  private baselineNavUsdt: number | null = null;
+  private baselineMark: number | null = null;
   private timer: NodeJS.Timeout | null = null;
+  private readonly zoneLabel?: () => string | null;
+  private readonly accMetrics?: () => AccumulationMetrics | null;
 
   constructor(
     tg: TelegramNotifier,
     account: VirtualAccount,
     markFn: () => number | null,
-    opts: { runId: string; summaryMs: number },
+    opts: ReporterProviders,
     log: Logger
   ) {
     this.tg = tg;
@@ -55,7 +70,30 @@ export class SoakReporter {
     this.markFn = markFn;
     this.runId = opts.runId;
     this.summaryMs = opts.summaryMs;
+    this.zoneLabel = opts.zoneLabel;
+    this.accMetrics = opts.accMetrics;
     this.log = log.child({ module: "soak-reporter" });
+  }
+
+  // Immediate accumulation alerts (separate from harvest fills).
+  accBuy(info: AccBuyInfo): void {
+    this.cumAccBuys++;
+    this.tg.notify(
+      `🟢 <b>PAPER ACCUMULATION BUY</b> <code>${this.runId}</code>\n` +
+      `Bought: <code>${fmt(info.qty)} ZIG</code> @ <code>${info.price.toFixed(6)}</code>\n` +
+      `USDT spent: <code>${info.usdtSpent.toFixed(2)}</code> · Fee: <code>${info.fee.toFixed(2)}</code>\n` +
+      `Recovery target: <code>${info.recoveryTarget.toFixed(6)}</code>\n` +
+      `Budget remaining: <code>${info.budgetRemaining.toFixed(2)}</code> USDT · Cycle <code>${info.cycleId}</code>`
+    );
+  }
+
+  accRecovery(info: AccRecoveryInfo): void {
+    this.cumAccRecoveries++;
+    this.tg.notify(
+      `🟣 <b>PAPER ACCUMULATION RECOVERY</b> <code>${this.runId}</code>\n` +
+      `Recovery sell: <code>${fmt(info.qty)} ZIG</code> @ <code>${info.price.toFixed(6)}</code> · Fee: <code>${info.fee.toFixed(2)}</code>\n` +
+      `(principal reclaimed FIFO; surplus ZIG retained)`
+    );
   }
 
   start(): void {
@@ -70,6 +108,7 @@ export class SoakReporter {
 
   startup(detail: Record<string, unknown>): void {
     this.startedAt = Date.now();
+    this.captureBaselineNav();
     this.startSnapshot = this.snapshot();
     this.tg.notify(
       `🧪 <b>PAPER SOAK STARTED</b> <code>${this.runId}</code>\n` +
@@ -142,33 +181,61 @@ export class SoakReporter {
       `Decisions: ${c.allowed} allowed · ${c.reduced} reduced · ${c.rejected} rejected\n` +
       `Blocked: ${blocked}\n` +
       `Sold: <code>${fmt(c.soldZig)}</code> · Rebought: <code>${fmt(c.reboughtZig)}</code> ZIG\n` +
-      `Cycles: <code>${cm.completedCount}</code> completed / <code>${cm.openCount}</code> open (${(cm.completionRate * 100).toFixed(0)}%)\n` +
-      `Harvested: <code>${cm.harvestedUsdt.toFixed(2)}</code> USDT · Unrecovered: <code>${fmt(cm.unrecoveredZig)}</code> ZIG\n\n` +
+      `Harvest cycles: <code>${cm.completedCount}</code> done / <code>${cm.openCount}</code> open (${(cm.completionRate * 100).toFixed(0)}%)\n` +
+      `Harvested: <code>${cm.harvestedUsdt.toFixed(2)}</code> USDT · Unrecovered: <code>${fmt(cm.unrecoveredZig)}</code> ZIG\n` +
+      `Accumulation: ${this.cumAccBuys} buys / ${this.cumAccRecoveries} recoveries\n\n` +
       `<b>START</b>\n${this.startSnapshot}\n\n<b>END</b>\n${this.snapshot()}`
     );
+    const acc = this.accMetrics?.() ?? null;
     this.log.warn(
-      { runId: this.runId, durationMin: mins, ...c, blocked: Object.fromEntries(c.blocked), cycles: cm },
+      { runId: this.runId, durationMin: mins, ...c, blocked: Object.fromEntries(c.blocked), cycles: cm, accBuys: this.cumAccBuys, accRecoveries: this.cumAccRecoveries, accumulation: acc },
       "PAPER_SOAK_RUN_RECORD"
     );
   }
 
-  // Portfolio + cycle metrics snapshot.
+  // Portfolio + zone + harvest + accumulation snapshot.
   private snapshot(): string {
     const mark = this.markFn();
     const t = this.account.derive(mark);
     const c = this.account.cycleMetrics(mark);
+    const zone = this.zoneLabel?.() ?? null;
+    const acc = this.accMetrics?.() ?? null;
+    const navLine = this.navLine(mark, t.totalBase);
     return (
+      (zone ? `🧭 <b>Zone:</b> <code>${zone}</code>\n` : "") +
       `📦 <b>Portfolio</b>\n` +
       `Total ZIG: <code>${fmt(t.totalBase)}</code> (active <code>${fmt(t.activeBase)}</code> / reserve <code>${fmt(t.reserveBase)}</code>)\n` +
       `USDT: <code>${fmt(this.account.usdtBalance)}</code>\n` +
       `Avg cost: <code>${t.avgCost.toFixed(6)}</code>` + (mark !== null ? ` · Mark: <code>${mark.toFixed(6)}</code>` : "") + `\n` +
+      (navLine ? `${navLine}\n` : "") +
       `Realized PnL: <code>${t.realizedPnlUsdt.toFixed(2)}</code>` + (t.unrealizedPnlUsdt !== null ? ` · Unrealized: <code>${t.unrealizedPnlUsdt.toFixed(2)}</code>` : "") + ` USDT\n` +
       `Fees: <code>${t.totalFeesUsdt.toFixed(2)}</code> USDT\n` +
-      `🔄 <b>Cycles</b>\n` +
-      `Open: <code>${c.openCount}</code> · Completed: <code>${c.completedCount}</code> · Rate: <code>${(c.completionRate * 100).toFixed(0)}%</code>\n` +
+      `🔄 <b>Harvest</b> open <code>${c.openCount}</code> · done <code>${c.completedCount}</code> (${(c.completionRate * 100).toFixed(0)}%)\n` +
       `Unrecovered: <code>${fmt(c.unrecoveredZig)}</code> ZIG · Harvested: <code>${c.harvestedUsdt.toFixed(2)}</code> USDT` +
-      (c.opportunityCostUsdt !== null ? `\nOpportunity cost: <code>${c.opportunityCostUsdt.toFixed(2)}</code> USDT` : "")
+      (c.opportunityCostUsdt !== null ? ` · Opp.cost: <code>${c.opportunityCostUsdt.toFixed(2)}</code>` : "") +
+      (acc
+        ? `\n🟢 <b>Accumulation</b> open <code>${acc.openCount}</code> · recovered <code>${acc.principalRecoveredCount}</code>\n` +
+          `Deployed: <code>${acc.usdtDeployed.toFixed(2)}</code> · Recovered: <code>${acc.usdtRecovered.toFixed(2)}</code> USDT · ` +
+          `Surplus ZIG: <code>${fmt(acc.surplusZig)}</code> · Open exposure: <code>${acc.openExposureUsdt.toFixed(2)}</code> USDT`
+        : "")
     );
+  }
+
+  private captureBaselineNav(): void {
+    const mark = this.markFn();
+    if (mark === null) return;
+    const t = this.account.derive(mark);
+    this.baselineMark = mark;
+    this.baselineNavUsdt = t.totalBase * mark + this.account.usdtBalance;
+  }
+
+  private navLine(mark: number | null, totalBase: number): string | null {
+    if (mark === null || this.baselineNavUsdt === null) return null;
+    const current = totalBase * mark + this.account.usdtBalance;
+    const delta = current - this.baselineNavUsdt;
+    const sign = delta >= 0 ? "+" : "";
+    const startMark = this.baselineMark !== null ? ` @ ${this.baselineMark.toFixed(6)}` : "";
+    return `NAV: <code>${current.toFixed(2)} USDT</code> · Δ <code>${sign}${delta.toFixed(2)} USDT</code> vs start<code>${startMark}</code>`;
   }
 }
 
