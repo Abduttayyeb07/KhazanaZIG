@@ -32,6 +32,16 @@ ok("recovery sell qty = principal/bid", Math.abs(recoverySellQty(1000, 1.0, 0, 0
   ok("surplus kept (~2865 ZIG)", Math.abs(c.surplusZigQty - (20408 - qty)) < 1e-6, c.surplusZigQty.toFixed(0));
 }
 
+// Mirror of the harvest slip-strand: a recovery sell whose fill slips just BELOW
+// target (sell-side slippage) must still reclaim principal, not strand the cycle.
+{
+  const t = new AccumulationCycleTracker("rs", "bybit", "ZIGUSDT", 500, 1.0);
+  t.onBuy("b1", 20408, 0.049, 1.0);          // target 0.05145
+  const slippedBid = 0.05145 * 0.9988;       // engine fired at bid≈target; sell slip −12bps → below target
+  t.onRecoverySell("s1", 20408, slippedBid, 1.0);
+  ok("acc recovery completes despite slipped fill", t.all()[0].status === "PRINCIPAL_RECOVERED", t.all()[0].status);
+}
+
 // ── 2. Budget + dry powder ──────────────────────────────────────────────────────
 console.log("\n2. Accumulation budget + dry powder");
 {

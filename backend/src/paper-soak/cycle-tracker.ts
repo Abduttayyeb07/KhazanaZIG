@@ -90,10 +90,20 @@ export class CycleTracker {
     return cycle;
   }
 
-  // A BUY fill recovers inventory: FIFO-match the oldest eligible open cycles.
+  // A BUY fill recovers inventory: FIFO-match the oldest OPEN cycles.
+  //
+  // We do NOT re-gate by price here. A harvest buy is always a rebuy the driver
+  // already decided to issue (it gates on openCyclesForRebuy(ask)); re-filtering on
+  // the fill price double-jeopardies it. With buy-side slippage the fill lands just
+  // above a target on a shallow dip, openCyclesForRebuy(fillPrice) returns empty, and
+  // the bought ZIG recovers nothing — cycles strand (rebought > 0, done = 0). FIFO
+  // over all open cycles pays down the oldest obligation first; profitability is still
+  // captured honestly in harvestedUsdt = grossSell − spentRebuy − fees.
   onBuy(fillId: string, qty: number, price: number, feeUsdt: number): void {
     let remaining = qty;
-    const eligible = this.openCyclesForRebuy(price);
+    const eligible = this.cycles
+      .filter((c) => c.unrecoveredQty > EPS)
+      .sort((a, b) => a.openedAt - b.openedAt);
     const totalFeeBase = qty > 0 ? feeUsdt / qty : 0; // spread the buy fee across allocated qty
 
     for (const c of eligible) {

@@ -43,11 +43,24 @@ export class AccumulationCycleTracker {
     return c;
   }
 
-  // A RECOVERY SELL reclaims principal FIFO across eligible cycles; surplus ZIG is kept.
+  // A RECOVERY SELL reclaims principal FIFO across open cycles still owing principal.
+  //
+  // We do NOT re-gate by price here (mirror of the harvest onBuy fix). The engine
+  // already decided to recover (it gates on openForRecovery(bid)); sell-side slippage
+  // can land the fill just BELOW target on a shallow touch, and re-filtering on the
+  // fill price would strand the cycle (ZIG sold, principal reclaimed = 0). FIFO over
+  // open cycles owing principal pays down the oldest first.
   onRecoverySell(fillId: string, qty: number, price: number, feeUsdt: number): void {
     let remainingQty = qty;
     const feePerQty = qty > 0 ? feeUsdt / qty : 0;
-    for (const c of this.openForRecovery(price)) {
+    const eligible = this.cycles
+      .filter(
+        (c) =>
+          (c.status === "OPEN" || c.status === "PARTIALLY_RECOVERED") &&
+          c.usdtRecovered < c.usdtSpent * this.principalRecoveryPct - EPS
+      )
+      .sort((a, b) => a.openedAt - b.openedAt);
+    for (const c of eligible) {
       if (remainingQty <= EPS) break;
       const principalNeed = Math.max(c.usdtSpent * this.principalRecoveryPct - c.usdtRecovered, 0);
       const qtyForPrincipal = principalNeed / price;

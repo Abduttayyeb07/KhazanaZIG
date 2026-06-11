@@ -40,6 +40,20 @@ function ok(name: string, cond: boolean, got?: unknown) {
   ok("metrics: 1 completed, 0 open, 100%", m.completedCount === 1 && m.openCount === 0 && m.completionRate === 1);
 }
 
+// ── 1a. Rebuy must recover despite buy-side slippage above target ───────────────
+// The June-10 "rebought > 0 / done 0" bug: a shallow dip touches target, the driver
+// fires the rebuy, but buy slippage lands the fill just ABOVE target. onBuy must still
+// close the cycle (FIFO), not strand it by re-gating on the slipped fill price.
+{
+  console.log("\n1a. Rebuy recovers despite buy-side slippage above target");
+  const t = new CycleTracker("rs", "bybit", "ZIGUSDT", 150); // target = sell × 0.985
+  t.onSell("s1", 1000, 0.056, 0.5);                           // target = 0.05516
+  const slippedFill = 0.056 * 0.985 * 1.0012;                 // ask≈target, +12bps buy slip → above target
+  t.onBuy("b1", 1000, slippedFill, 0.5);
+  ok("cycle completes despite slipped fill", t.unrecoveredTotal() === 0, t.unrecoveredTotal());
+  ok("status COMPLETED (not stranded)", t.all()[0].status === "COMPLETED", t.all()[0].status);
+}
+
 // ── 1b. Sell bucket occupancy (frees when the cycle completes) ──────────────────
 {
   console.log("\n1b. Sell bucket occupancy (frees on cycle complete)");
