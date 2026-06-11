@@ -12,9 +12,15 @@ import type { AccumulationEngine, AccTickContext } from "../accumulation/accumul
 
 // ── Soak driver (zone-aware, v3) ────────────────────────────────────────────────
 //
-// Originates intents in strict tick order (manage obligations → grow treasury):
-//   1. harvest sell   2. harvest rebuy   3. accumulation recovery   4. accumulation buy
+// Originates intents in strict tick order — CLOSE obligations before OPENING new ones:
+//   1. harvest rebuy   2. accumulation recovery sell   3. harvest sell   4. accumulation buy
 // Only ONE action submits per tick (sequential, one order in flight).
+//
+// Closing-before-opening is NOT cosmetic. Selling first starved rebuys at price dips
+// (the June-10 zero-rebuy bug): a dip is simultaneously rebuy-eligible AND a "fresh"
+// sell bucket, so a sell-first/return tick sold into the very dip it should rebuy and
+// never reached the rebuy step. Rebuy-first closes the cycle instead. We also refuse to
+// open a new sell while any rebuy is eligible (don't sell where you're trying to buy).
 //
 // Sells are ZONE-gated (no avgCost anchor — fixes the "idle below cost" trap);
 // harvest profit comes from the sell→rebuy spread. Zone C / above harvest at
@@ -94,54 +100,64 @@ export class HarvestDriver {
       this.maybeClearBackoff(bid, ask);
       const { allowed, aggression } = this.zone();
 
-      // ── 1. HARVEST SELL (zone-gated) ─────────────────────────────────────
-      if (allowed.harvestSell) {
-        const active = this.account.activeZig;
-        const cooldownOk = now >= this.sellCooldownUntil;
-        const bucketOk = !this.account.sellBucketOccupied(bid, this.p.sellBucketBps);
-        const backoffOk = !this.sellBackoff || now >= this.sellBackoff.until;
-        if (cooldownOk && bucketOk && backoffOk && active >= this.p.minOrderZig) {
-          if (this.account.unrecoveredZig >= this.account.startingActive * this.p.maxUnrecoveredActivePct) {
-            this.reporter.intentBlocked("ACTIVE_DEPLOYMENT_CAP");
-          } else {
-            const mult = aggression === "REDUCED" ? 0.5 : 1;
-            const desired = Math.max(active * this.p.maxOrderActivePct * mult, this.p.minOrderZig);
-            await this.submit("sell", desired, bid, now);
-            return;
+      const accCtx: AccTickContext | null = this.acc
+        ? {
+            bid,
+            ask,
+            spreadBps: m.spreadBps ?? Number.POSITIVE_INFINITY,
+            liquidityUsdt: (m.askLiquidity ?? 0) * ask,
+            regime: m.volatilityRegime,
+            allowed,
+            usdtBalance: this.account.usdtBalance,
+            harvestRebuyReserve: this.account.harvestRebuyReserveUsdt,
+            now,
           }
+        : null;
+
+      // ── 1. HARVEST REBUY — close open cycles whose target the dip reached ─
+      const rebuyEligible = allowed.harvestRebuy ? this.account.openCyclesForRebuy(ask) : [];
+      if (rebuyEligible.length > 0 && this.account.usdtBalance > 0) {
+        const buyBucket = priceBucketId(ask, this.p.buyBucketBps);
+        const buyBucketOk = now >= (this.buyBucketUntil.get(buyBucket) ?? 0);
+        const buyBackoffOk = !this.buyBackoff || now >= this.buyBackoff.until;
+        const desired = rebuyEligible.reduce((s, c) => s + c.unrecoveredQty, 0);
+        if (buyBucketOk && buyBackoffOk && desired >= this.p.minOrderZig) {
+          await this.submit("buy", desired, ask, now);
+          return;
         }
       }
 
-      // ── 2. HARVEST REBUY (zone-gated, cycle-bound) ───────────────────────
-      if (allowed.harvestRebuy) {
-        const usdt = this.account.usdtBalance;
-        const eligible = this.account.openCyclesForRebuy(ask);
-        if (eligible.length > 0 && usdt > 0) {
-          const buyBucket = priceBucketId(ask, this.p.buyBucketBps);
-          const buyBucketOk = now >= (this.buyBucketUntil.get(buyBucket) ?? 0);
-          const buyBackoffOk = !this.buyBackoff || now >= this.buyBackoff.until;
-          const desired = eligible.reduce((s, c) => s + c.unrecoveredQty, 0);
-          if (buyBucketOk && buyBackoffOk && desired >= this.p.minOrderZig) {
-            await this.submit("buy", desired, ask, now);
-            return;
-          }
-        }
-      }
-
-      // ── 3 & 4. ACCUMULATION (recovery sell, then fresh buy) ──────────────
-      if (this.acc) {
-        const accCtx: AccTickContext = {
-          bid,
-          ask,
-          spreadBps: m.spreadBps ?? Number.POSITIVE_INFINITY,
-          liquidityUsdt: (m.askLiquidity ?? 0) * ask,
-          regime: m.volatilityRegime,
-          allowed,
-          usdtBalance: this.account.usdtBalance,
-          harvestRebuyReserve: this.account.harvestRebuyReserveUsdt,
-          now,
-        };
+      // ── 2. ACCUMULATION RECOVERY SELL — close accumulation lots ──────────
+      if (this.acc && accCtx) {
         if (await this.acc.attemptRecoverySell(accCtx)) return;
+      }
+
+      // ── 3. HARVEST SELL — open a new cycle (only after closes) ───────────
+      // Never open a sell while a rebuy is eligible: the dip we'd sell into is the
+      // very dip we should be buying back. Selling there is what starved rebuys.
+      if (allowed.harvestSell) {
+        if (rebuyEligible.length > 0) {
+          this.reporter.intentBlocked("SELL_HELD_FOR_REBUY");
+        } else {
+          const active = this.account.activeZig;
+          const cooldownOk = now >= this.sellCooldownUntil;
+          const bucketOk = !this.account.sellBucketOccupied(bid, this.p.sellBucketBps);
+          const backoffOk = !this.sellBackoff || now >= this.sellBackoff.until;
+          if (cooldownOk && bucketOk && backoffOk && active >= this.p.minOrderZig) {
+            if (this.account.unrecoveredZig >= this.account.startingActive * this.p.maxUnrecoveredActivePct) {
+              this.reporter.intentBlocked("ACTIVE_DEPLOYMENT_CAP");
+            } else {
+              const mult = aggression === "REDUCED" ? 0.5 : 1;
+              const desired = Math.max(active * this.p.maxOrderActivePct * mult, this.p.minOrderZig);
+              await this.submit("sell", desired, bid, now);
+              return;
+            }
+          }
+        }
+      }
+
+      // ── 4. ACCUMULATION BUY — open a new accumulation lot (last) ─────────
+      if (this.acc && accCtx) {
         await this.acc.attemptBuy(accCtx);
       }
     } catch (err) {

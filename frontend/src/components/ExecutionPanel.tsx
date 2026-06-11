@@ -3,7 +3,7 @@
 import { useState } from "react";
 import type { DashboardManagedOrder } from "@/types";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:3001";
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:3001";
 
 interface Props {
   orders: DashboardManagedOrder[];
@@ -46,6 +46,7 @@ export function ExecutionPanel({ orders, mode, symbol }: Props) {
       sessionStorage.setItem("zig_operator_token", token);
       const res = await fetch(`${API_BASE}/api/operator/order`, {
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": "application/json", "x-operator-token": token },
         body: JSON.stringify({ exchange, side, price: Number(price), quantity: Number(quantity) }),
       });
@@ -76,6 +77,7 @@ export function ExecutionPanel({ orders, mode, symbol }: Props) {
     }
     const res = await fetch(`${API_BASE}/api/operator/order`, {
       method: "DELETE",
+      credentials: "include",
       headers: { "Content-Type": "application/json", "x-operator-token": token },
       body: JSON.stringify({ clientOrderId }),
     });

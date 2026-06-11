@@ -14,6 +14,7 @@ export type AuditAction =
   | "CREDENTIALS_DELETE"
   | "ORDER_PLACE"
   | "ORDER_CANCEL"
+  | "APP_LOGIN"
   | "OPERATOR_AUTH_FAIL"
   | "RATE_LIMITED";
 

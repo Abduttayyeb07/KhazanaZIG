@@ -30,6 +30,7 @@ import { TelegramCommandListener } from "./telegram/command-listener.js";
 import type { DashboardPayload } from "./api/server.js";
 import { AuditLog } from "./api/audit.js";
 import { validateCredentialBody, validateExchangeOnly, validateOrderBody } from "./api/middleware/sanitize-body.js";
+import { AppUserStore, SESSION_COOKIE, clearSessionCookie, sessionCookie } from "./auth/user-store.js";
 
 const log = createLogger("core-engine");
 
@@ -43,10 +44,13 @@ async function main() {
 
   // ── 2. API Server (control-plane: operator token + audit + rate limit) ───
   const audit = new AuditLog(log);
+  let appUsers: AppUserStore | null = null;
   const api = new ApiServer(log, {
     operatorToken: cfg.OPERATOR_TOKEN,
     dashboardOrigin: cfg.DASHBOARD_ORIGIN,
     audit,
+    sessionCookieName: SESSION_COOKIE,
+    validateSessionToken: (token) => appUsers?.validateSessionToken(token) ?? Promise.resolve(false),
   });
 
   // ── 3. State Engine + Mode Controller ─────────────────────────────────────
@@ -56,6 +60,7 @@ async function main() {
 
   // ── 4. Database + Session layer ───────────────────────────────────────────
   const dbConnected = await connectDatabase(log);
+  appUsers = new AppUserStore(dbConnected ? getPrisma() : null, log);
   const crypto = new CredentialCrypto(cfg.ENCRYPTION_KEY, log);
   const credentialStore = new CredentialStore(getPrisma(), crypto, log);
   const sessionManager = new SessionManager(credentialStore, log, crypto.isEphemeral);
@@ -143,6 +148,28 @@ async function main() {
     cmdListener = new TelegramCommandListener(
       cfg.TELEGRAM_BOT_TOKEN, cfg.TELEGRAM_CHAT_ID, cfg.TELEGRAM_ALLOWED_USER_IDS, tg, log
     );
+    cmdListener.on("/addusers", async (args, reply) => {
+      if (!appUsers || !dbConnected) {
+        reply("User database unavailable. Run with Postgres and apply the Prisma schema first.");
+        return;
+      }
+      const [email, ...passwordParts] = args;
+      if (!email) {
+        reply("Usage: <code>/addusers email@example.com optionalStrongPassword1</code>");
+        return;
+      }
+      try {
+        const created = await appUsers.createUser(email, passwordParts.join(" ") || undefined);
+        reply(
+          `<b>Dashboard user ready</b>\n` +
+          `Email: <code>${created.email}</code>\n` +
+          `Password: <code>${created.password}</code>\n` +
+          `${created.generated ? "Generated password. Store it now; it will not be shown again." : "Password set from command."}`
+        );
+      } catch (err) {
+        reply(`Could not add user: ${err instanceof Error ? err.message : "error"}`);
+      }
+    });
     soakController.register(cmdListener);
   } else {
     log.warn("Telegram not configured — soak control + reporting unavailable");
@@ -272,6 +299,33 @@ async function main() {
 
   // ── 10. API routes ────────────────────────────────────────────────────────
   // PUBLIC (read-only, no secrets exposed) — open on the bound interface
+  api.route("POST", "/api/auth/login", async ({ body, ip, send }) => {
+    if (!appUsers || !dbConnected) return send(503, { error: "Authentication unavailable" });
+    const b = body as { email?: string; password?: string };
+    if (typeof b?.email !== "string" || typeof b?.password !== "string") {
+      audit.record({ action: "APP_LOGIN", ip, success: false, detail: "bad_payload" });
+      return send(400, { error: "email and password required" });
+    }
+    const session = await appUsers.login(b.email, b.password);
+    if (!session) {
+      audit.record({ action: "APP_LOGIN", ip, success: false, detail: "invalid" });
+      return send(401, { error: "Invalid email or password" });
+    }
+    audit.record({ action: "APP_LOGIN", ip, success: true, detail: session.email });
+    send(200, { ok: true, email: session.email }, { "Set-Cookie": sessionCookie(session.token, cfg.NODE_ENV === "production") });
+  });
+
+  api.route("GET", "/api/auth/me", async ({ cookies, send }) => {
+    const email = await appUsers?.sessionEmail(cookies[SESSION_COOKIE]);
+    if (!email) return send(401, { error: "Unauthorized" });
+    send(200, { ok: true, email });
+  });
+
+  api.route("POST", "/api/auth/logout", async ({ cookies, send }) => {
+    await appUsers?.logout(cookies[SESSION_COOKIE]);
+    send(200, { ok: true }, { "Set-Cookie": clearSessionCookie(cfg.NODE_ENV === "production") });
+  });
+
   api.route("GET", "/api/public/session-status", async ({ send }) => {
     send(200, await sessionManager.status());
   });

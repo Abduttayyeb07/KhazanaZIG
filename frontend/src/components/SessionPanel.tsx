@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:3001";
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:3001";
 
 interface SessionStatus {
   active: boolean;
@@ -31,7 +31,7 @@ export function SessionPanel() {
 
   async function loadStatus() {
     try {
-      const res = await fetch(`${API_BASE}/api/public/session-status`);
+      const res = await fetch(`${API_BASE}/api/public/session-status`, { credentials: "include" });
       setStatus(await res.json());
     } catch {
       setStatus(null);
@@ -51,6 +51,7 @@ export function SessionPanel() {
       sessionStorage.setItem("zig_operator_token", operatorToken);
       const res = await fetch(`${API_BASE}/api/operator/credentials`, {
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": "application/json", "x-operator-token": operatorToken },
         body: JSON.stringify({ exchange, apiKey, apiSecret }),
       });
@@ -81,6 +82,7 @@ export function SessionPanel() {
       sessionStorage.setItem("zig_operator_token", operatorToken);
       const res = await fetch(`${API_BASE}/api/operator/credentials`, {
         method: "DELETE",
+        credentials: "include",
         headers: { "Content-Type": "application/json", "x-operator-token": operatorToken },
         body: JSON.stringify({ exchange: exchangeToRemove }),
       });

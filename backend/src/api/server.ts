@@ -10,7 +10,8 @@ export interface RouteContext {
   body: unknown;
   ip: string;
   operator: boolean;
-  send: (status: number, payload: unknown) => void;
+  cookies: Record<string, string>;
+  send: (status: number, payload: unknown, headers?: Record<string, string | string[]>) => void;
 }
 
 export type RouteHandler = (ctx: RouteContext) => Promise<void> | void;
@@ -20,6 +21,8 @@ export interface ApiServerOptions {
   operatorToken: string;
   dashboardOrigin: string;
   audit: AuditLog;
+  validateSessionToken?: (token: string | undefined) => Promise<boolean>;
+  sessionCookieName?: string;
 }
 
 // Any route under this prefix is a CONTROL route — auth enforced centrally.
@@ -201,6 +204,7 @@ export class ApiServer {
       res.setHeader("Access-Control-Allow-Origin", this.opts.dashboardOrigin);
       res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
       res.setHeader("Access-Control-Allow-Headers", "Content-Type, x-operator-token");
+      res.setHeader("Access-Control-Allow-Credentials", "true");
 
       if (req.method === "OPTIONS") {
         res.writeHead(204);
@@ -223,11 +227,18 @@ export class ApiServer {
         return;
       }
 
-      this.dispatch(req, res, path, handler);
+      void this.dispatch(req, res, path, handler).catch((err) => {
+        this.log.error({ err }, "API dispatch failed");
+        if (!res.headersSent) {
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Internal error" }));
+        }
+      });
     });
 
     this.wss = new WebSocketServer({ server, path: "/ws" });
     this.wss.on("connection", (ws, req) => {
+      void this.authorizeWs(ws, req);
       this.log.info({ ip: clientIp(req) }, "Dashboard client connected");
       ws.on("close", () => this.log.info("Dashboard client disconnected"));
       ws.on("error", (err) => this.log.warn({ err }, "Dashboard WS error"));
@@ -241,15 +252,29 @@ export class ApiServer {
     });
   }
 
-  private dispatch(req: IncomingMessage, res: ServerResponse, path: string, handler: RouteHandler): void {
+  private async authorizeWs(ws: WebSocket, req: IncomingMessage): Promise<void> {
+    if (!this.opts.validateSessionToken) return;
+    const cookies = parseCookies(headerValue(req, "cookie"));
+    const ok = await this.opts.validateSessionToken(cookies[this.opts.sessionCookieName ?? "zig_session"]);
+    if (!ok) ws.close(1008, "Unauthorized");
+  }
+
+  private async dispatch(req: IncomingMessage, res: ServerResponse, path: string, handler: RouteHandler): Promise<void> {
     const ip = clientIp(req);
-    const send = (status: number, payload: unknown) => {
+    const cookies = parseCookies(headerValue(req, "cookie"));
+    const send = (status: number, payload: unknown, headers?: Record<string, string | string[]>) => {
       if (res.headersSent) return;
-      res.writeHead(status, { "Content-Type": "application/json" });
+      res.writeHead(status, { "Content-Type": "application/json", ...(headers ?? {}) });
       res.end(JSON.stringify(payload));
     };
 
     const isControl = path.startsWith(OPERATOR_PREFIX);
+    const isProtectedRead = path.startsWith("/api/public/");
+
+    if (isProtectedRead && this.opts.validateSessionToken) {
+      const ok = await this.opts.validateSessionToken(cookies[this.opts.sessionCookieName ?? "zig_session"]);
+      if (!ok) return send(401, { error: "Unauthorized" });
+    }
 
     // ── Control-route gating (rate limit → token), enforced BEFORE body read ──
     if (isControl) {
@@ -300,12 +325,25 @@ export class ApiServer {
         }
       }
 
-      Promise.resolve(handler({ body, ip, operator: isControl, send })).catch((err: unknown) => {
+      Promise.resolve(handler({ body, ip, operator: isControl, cookies, send })).catch((err: unknown) => {
         this.log.error({ err }, "Route handler error");
         send(500, { error: "Internal error" });
       });
     });
   }
+}
+
+function parseCookies(header: string | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!header) return out;
+  for (const part of header.split(";")) {
+    const idx = part.indexOf("=");
+    if (idx <= 0) continue;
+    const key = part.slice(0, idx).trim();
+    const val = part.slice(idx + 1).trim();
+    if (key) out[key] = decodeURIComponent(val);
+  }
+  return out;
 }
 
 function headerValue(req: IncomingMessage, name: string): string | undefined {

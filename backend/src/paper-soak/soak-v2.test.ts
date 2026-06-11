@@ -204,6 +204,30 @@ function harness(opts: {
     ok("buy bucket: different zone allowed", h.submits.length === 2, h.submits.length);
   }
 
+  // ── 3b. Rebuy beats sell — the June-10 zero-rebuy fix ─────────────────────────
+  // The dip that makes a cycle rebuy-eligible is ALSO a fresh sell bucket. With
+  // sells ENABLED, an eligible rebuy must still fire (close) instead of opening a
+  // new sell. Pre-fix, sell-first/return sold into the dip and starved the rebuy.
+  console.log("\n3b. Rebuy priority over sell (June-10 fix)");
+  {
+    const cyc = { unrecoveredQty: 500 } as unknown as HarvestCycle;
+    const h = harness({ state: makeState(0.049, 0.048), rebuyCycles: [cyc], harvestSell: true });
+    await h.driver.tick();
+    ok("eligible rebuy wins over sell → BUY", h.submits.length === 1 && h.submits[0].side === "buy", JSON.stringify(h.submits));
+    ok("no sell opened into the dip", !h.submits.some((s) => s.side === "sell"));
+  }
+
+  // When the rebuy is eligible but temporarily gated (buy bucket on cooldown), the
+  // driver must HOLD the sell rather than sell into the rebuy zone.
+  {
+    const cyc = { unrecoveredQty: 500 } as unknown as HarvestCycle;
+    const h = harness({ state: makeState(0.0479, 0.048), rebuyCycles: [cyc], params: { buyCooldownMs: 9_999_999 }, harvestSell: true });
+    await h.driver.tick();                                   // rebuy fires, locks buy bucket
+    await h.driver.tick();                                   // rebuy gated → must NOT sell into dip
+    ok("rebuy gated → sell held, not opened", h.submits.length === 1 && h.submits[0].side === "buy", JSON.stringify(h.submits));
+    ok("SELL_HELD_FOR_REBUY recorded", h.blocked.includes("SELL_HELD_FOR_REBUY"));
+  }
+
   console.log(`\n══════ ${pass} passed, ${fail} failed ══════`);
   process.exit(fail === 0 ? 0 : 1);
 })();

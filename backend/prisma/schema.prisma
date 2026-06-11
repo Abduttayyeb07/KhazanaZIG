@@ -169,3 +169,34 @@ model ManagedOrder {
   @@index([exchange, symbol])
   @@map("managed_orders")
 }
+
+// App users are created by the trusted Telegram operator only. There is no public
+// signup path. Passwords are stored as scrypt hashes; sessions store token hashes.
+
+model AppUser {
+  id           String       @id @default(cuid())
+  email        String       @unique
+  passwordHash String
+  role         String       @default("viewer")
+  isActive     Boolean      @default(true)
+  createdBy    String       @default("telegram")
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+  sessions     AppSession[]
+
+  @@map("app_users")
+}
+
+model AppSession {
+  id        String    @id @default(cuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  createdAt DateTime  @default(now())
+  revokedAt DateTime?
+  user      AppUser   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("app_sessions")
+}

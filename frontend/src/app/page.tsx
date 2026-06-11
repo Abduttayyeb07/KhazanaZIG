@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { useSystemState } from "@/hooks/useSystemState";
 import { SystemHeader } from "@/components/SystemHeader";
 import { ExchangeCard } from "@/components/ExchangeCard";
@@ -8,15 +9,63 @@ import { SessionPanel } from "@/components/SessionPanel";
 import { TreasuryPanel } from "@/components/TreasuryPanel";
 import { ExecutionPanel } from "@/components/ExecutionPanel";
 import { AccountStatePanel } from "@/components/AccountStatePanel";
+import { SignInPage } from "@/components/SignInPage";
+
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
 
 export default function Dashboard() {
-  const { state, status } = useSystemState();
+  const [auth, setAuth] = useState<{ checked: boolean; email: string | null }>({ checked: false, email: null });
+  const { state, status } = useSystemState(Boolean(auth.email));
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${API_BASE}/api/auth/me`, { credentials: "include" })
+      .then(async (res) => {
+        if (cancelled) return;
+        if (!res.ok) {
+          setAuth({ checked: true, email: null });
+          return;
+        }
+        const data = await res.json();
+        setAuth({ checked: true, email: data.email ?? null });
+      })
+      .catch(() => {
+        if (!cancelled) setAuth({ checked: true, email: null });
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  async function logout() {
+    await fetch(`${API_BASE}/api/auth/logout`, { method: "POST", credentials: "include" }).catch(() => undefined);
+    setAuth({ checked: true, email: null });
+  }
+
+  if (!auth.checked) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-surface text-zinc-500 font-mono text-sm">
+        Checking session...
+      </div>
+    );
+  }
+
+  if (!auth.email) {
+    return <SignInPage onSignedIn={(email) => setAuth({ checked: true, email })} />;
+  }
 
   return (
     <div className="min-h-screen flex flex-col bg-surface">
       <SystemHeader state={state} wsStatus={status} />
 
       <main className="flex-1 p-6 flex flex-col gap-6 max-w-6xl mx-auto w-full">
+        <div className="flex items-center justify-between border border-border bg-card rounded-lg px-4 py-3">
+          <div>
+            <p className="text-xs text-zinc-500">Signed in</p>
+            <p className="text-sm text-white">{auth.email}</p>
+          </div>
+          <button onClick={logout} className="border border-border rounded-md px-3 py-2 text-xs text-zinc-300 hover:text-white hover:border-zinc-500">
+            Sign out
+          </button>
+        </div>
 
         {/* No data yet */}
         {!state && (

@@ -8,13 +8,20 @@ const WS_URL =
 
 type ConnectionStatus = "connecting" | "connected" | "disconnected";
 
-export function useSystemState() {
+export function useSystemState(enabled = true) {
   const [state, setState] = useState<DashboardState | null>(null);
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
   const wsRef = useRef<WebSocket | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
+    if (!enabled) {
+      wsRef.current?.close();
+      setState(null);
+      setStatus("disconnected");
+      return;
+    }
+
     let destroyed = false;
 
     function connect() {
@@ -55,7 +62,7 @@ export function useSystemState() {
       if (timerRef.current) clearTimeout(timerRef.current);
       wsRef.current?.close();
     };
-  }, []);
+  }, [enabled]);
 
   return { state, status };
 }
