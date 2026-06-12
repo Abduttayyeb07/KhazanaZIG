@@ -219,6 +219,8 @@ export class PaperSoak {
     }
 
     this.account.seed(stateEngine, entryCost);
+    // Echo the live trading params the PROCESS actually received — config drift
+    // between laptop/.env/server is then visible in the first Telegram message.
     this.reporter.startup({
       Exchange: settings.exchange,
       "Virtual ZIG": settings.virtualZig,
@@ -226,6 +228,12 @@ export class PaperSoak {
       "Virtual USDT": settings.virtualUsdt,
       "Entry cost": entryCost,
       "Tick (s)": settings.tickSeconds,
+      "Rebuy distance (bps)": cfg.MIN_REBUY_DISTANCE_BPS,
+      "Buckets sell/buy (bps)": `${cfg.SELL_BUCKET_BPS}/${cfg.BUY_BUCKET_BPS}`,
+      "Cooldowns sell/buy (s)": `${cfg.SELL_COOLDOWN_SECONDS}/${cfg.BUY_COOLDOWN_SECONDS}`,
+      "Unrecovered cap (pct)": cfg.MAX_UNRECOVERED_ACTIVE_PCT,
+      "Paper fee/slip (bps)": `${cfg.PAPER_TAKER_FEE_BPS}/${cfg.PAPER_SLIPPAGE_BPS}`,
+      "Fill probability": cfg.PAPER_FILL_PROBABILITY,
     });
     this.reporter.start();
     this.zoneManager?.start();
@@ -272,7 +280,7 @@ export class PaperSoak {
     const price = ev.fillPrice ?? order.price;
     if (size <= 0) return;
     const isAcc = (order.reason ?? "").startsWith("acc");
-    const { fillId, feeUsdt } = this.account.applyPaperFill(order.side, size, price, ev.at, this.d.stateEngine, isAcc ? "accumulation" : "harvest");
+    const { fillId, feeUsdt } = this.account.applyPaperFill(order.side, size, price, ev.at, this.d.stateEngine, isAcc ? "accumulation" : "harvest", order.price);
     if (isAcc) this.accEngine?.onPaperFill(order.side, size, price, fillId, feeUsdt);
     else this.reporter.fill(order.side, size, price);
   }

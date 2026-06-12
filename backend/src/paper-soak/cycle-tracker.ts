@@ -22,6 +22,7 @@ export interface HarvestCycle {
   reboughtQty: number;
   unrecoveredQty: number;
   avgSellPrice: number;
+  sellIntentPrice: number; // submitted bid — bucket anchor (fill price is slipped below it)
   avgRebuyPrice?: number;
   rebuyTargetPrice: number;
   grossSellUsdt: number;
@@ -43,6 +44,7 @@ export interface CycleMetrics {
   harvestedUsdt: number;        // from COMPLETED cycles only
   outstandingSellUsdt: number;  // proceeds tied up in open sells
   opportunityCostUsdt: number | null; // unrecovered × (mark − avgSellPrice); +ve = bought-back-cheaper would cost more
+  nearestRebuyTarget: number | null;  // highest open-cycle target — the first price a dip will trigger
 }
 
 const EPS = 1e-9;
@@ -65,7 +67,10 @@ export class CycleTracker {
   ) {}
 
   // A SELL fill opens a new cycle with a rebuy target below the sell price.
-  onSell(fillId: string, qty: number, price: number, feeUsdt: number): HarvestCycle {
+  // `intentPrice` is the submitted bid; it anchors bucket occupancy because the fill
+  // price is slipped BELOW the bid — gating on bid but recording the slipped fill let
+  // a 12bps slip defeat 15bps buckets (255 sells across ~19 buckets on Jun-11).
+  onSell(fillId: string, qty: number, price: number, feeUsdt: number, intentPrice = price): HarvestCycle {
     const now = Date.now();
     const cycle: HarvestCycle = {
       cycleId: `${this.runId}-c${++this.seq}`,
@@ -79,6 +84,7 @@ export class CycleTracker {
       reboughtQty: 0,
       unrecoveredQty: qty,
       avgSellPrice: price,
+      sellIntentPrice: intentPrice,
       rebuyTargetPrice: price * (1 - this.rebuyDistanceBps / 10_000),
       grossSellUsdt: price * qty,
       spentRebuyUsdt: 0,
@@ -146,7 +152,7 @@ export class CycleTracker {
   // inventory, a profitable sell in that zone is allowed again.
   sellBucketOccupied(price: number, bps: number): boolean {
     const b = priceBucketId(price, bps);
-    return this.cycles.some((c) => c.status !== "COMPLETED" && priceBucketId(c.avgSellPrice, bps) === b);
+    return this.cycles.some((c) => c.status !== "COMPLETED" && priceBucketId(c.sellIntentPrice, bps) === b);
   }
 
   // Open/partial cycles whose target the current ask has reached (price dropped
@@ -174,6 +180,7 @@ export class CycleTracker {
     const outstandingSellUsdt = this.cycles.reduce((s, c) => s + c.unrecoveredQty * c.avgSellPrice, 0);
     const harvestedUsdt = completed.reduce((s, c) => s + (c.harvestedUsdt ?? 0), 0);
 
+    const awaiting = this.cycles.filter((c) => c.unrecoveredQty > EPS);
     return {
       openCount: open.length,
       completedCount: completed.length,
@@ -184,6 +191,7 @@ export class CycleTracker {
       harvestedUsdt,
       outstandingSellUsdt,
       opportunityCostUsdt: mark !== null ? unrecoveredZig * (mark - avgSellPrice) : null,
+      nearestRebuyTarget: awaiting.length > 0 ? Math.max(...awaiting.map((c) => c.rebuyTargetPrice)) : null,
     };
   }
 }

@@ -65,6 +65,25 @@ function ok(name: string, cond: boolean, got?: unknown) {
   ok("freed after cycle completes", t.sellBucketOccupied(0.052, 25) === false);
 }
 
+// ── 1c. Bucket lock must survive slippage (the 255-sells bug) ───────────────────
+// Gating happens at the BID, but fills record 12bps below it. If occupancy keys off
+// the slipped fill, a fill landing across a 15bps bucket boundary frees the bid's
+// bucket and the driver re-sells the same zone forever. Occupancy must anchor on the
+// submitted bid (intent), not the fill. 0.05205 sits just above a 15bps bucket
+// boundary (~0.0520375); slipped −12bps → 0.0519875 lands below it (straddle).
+{
+  console.log("\n1c. Sell bucket lock anchored on intent (slippage-proof)");
+  const t = new CycleTracker("rb2", "bybit", "ZIGUSDT", 300);
+  const intent = 0.05205;
+  const slippedFill = intent * 0.9988;
+  ok("setup: fill straddles bucket boundary",
+    Math.floor(Math.log(slippedFill) / Math.log(1.0015)) !== Math.floor(Math.log(intent) / Math.log(1.0015)));
+  t.onSell("s", 1000, slippedFill, 0.5, intent);
+  ok("bid's bucket still occupied despite slip", t.sellBucketOccupied(intent, 15) === true);
+  const m = t.metrics(null);
+  ok("nearestRebuyTarget = fill × 0.97", m.nearestRebuyTarget !== null && Math.abs(m.nearestRebuyTarget - slippedFill * 0.97) < 1e-9, m.nearestRebuyTarget);
+}
+
 // ── 2. Paper realism (slippage + probabilistic fill) ────────────────────────────
 {
   console.log("\n2. Paper realism (slippage + fill probability)");

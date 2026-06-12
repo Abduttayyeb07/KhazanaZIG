@@ -33,10 +33,11 @@ interface Window {
   soldZig: number;
   reboughtZig: number;
   blocked: Map<string, number>;
+  rejectReasons: Map<string, number>; // WHY rejects happened — bare counts made Jun-11 undiagnosable
 }
 
 function emptyWindow(): Window {
-  return { allowed: 0, reduced: 0, rejected: 0, filledSells: 0, filledBuys: 0, soldZig: 0, reboughtZig: 0, blocked: new Map() };
+  return { allowed: 0, reduced: 0, rejected: 0, filledSells: 0, filledBuys: 0, soldZig: 0, reboughtZig: 0, blocked: new Map(), rejectReasons: new Map() };
 }
 
 export class SoakReporter {
@@ -127,6 +128,12 @@ export class SoakReporter {
     }
     const k = d.decision === "ALLOW" ? "allowed" : d.decision === "REDUCE" ? "reduced" : "rejected";
     this.w[k]++; this.cum[k]++;
+    if (k === "rejected") {
+      for (const r of d.reasons) {
+        this.w.rejectReasons.set(r, (this.w.rejectReasons.get(r) ?? 0) + 1);
+        this.cum.rejectReasons.set(r, (this.cum.rejectReasons.get(r) ?? 0) + 1);
+      }
+    }
   }
 
   fill(side: "buy" | "sell", size: number, _price: number): void {
@@ -155,11 +162,13 @@ export class SoakReporter {
     this.w = emptyWindow();
 
     const blocked = [...w.blocked.entries()].map(([r, n]) => `${r}×${n}`).join(", ") || "—";
+    const rejects = [...w.rejectReasons.entries()].map(([r, n]) => `${r}×${n}`).join(", ");
     const mins = Math.round(this.summaryMs / 60_000);
     this.tg.notify(
       `📊 <b>PAPER SOAK SUMMARY — ${mins}m</b> <code>${this.runId}</code>\n` +
       `Fills: ${w.filledSells} sell / ${w.filledBuys} buy\n` +
       `Decisions: ${w.allowed} allowed · ${w.reduced} reduced · ${w.rejected} rejected\n` +
+      (rejects ? `Rejected for: ${rejects}\n` : "") +
       `Blocked: ${blocked}\n` +
       `Sold: <code>${fmt(w.soldZig)}</code> · Rebought: <code>${fmt(w.reboughtZig)}</code> ZIG\n\n` +
       this.snapshot()
@@ -173,12 +182,14 @@ export class SoakReporter {
     const c = this.cum;
     const mins = Math.round((Date.now() - this.startedAt) / 60_000);
     const blocked = [...c.blocked.entries()].map(([r, n]) => `${r}×${n}`).join(", ") || "—";
+    const rejects = [...c.rejectReasons.entries()].map(([r, n]) => `${r}×${n}`).join(", ");
     const cm = this.account.cycleMetrics(this.markFn());
     this.tg.notify(
       `🏁 <b>PAPER SOAK RUN COMPLETE</b> <code>${this.runId}</code>\n` +
       `Duration: ${mins}m\n` +
       `Fills: ${c.filledSells} sell / ${c.filledBuys} buy\n` +
       `Decisions: ${c.allowed} allowed · ${c.reduced} reduced · ${c.rejected} rejected\n` +
+      (rejects ? `Rejected for: ${rejects}\n` : "") +
       `Blocked: ${blocked}\n` +
       `Sold: <code>${fmt(c.soldZig)}</code> · Rebought: <code>${fmt(c.reboughtZig)}</code> ZIG\n` +
       `Harvest cycles: <code>${cm.completedCount}</code> done / <code>${cm.openCount}</code> open (${(cm.completionRate * 100).toFixed(0)}%)\n` +
@@ -213,6 +224,7 @@ export class SoakReporter {
       `🔄 <b>Harvest</b> open <code>${c.openCount}</code> · done <code>${c.completedCount}</code> (${(c.completionRate * 100).toFixed(0)}%)\n` +
       `Unrecovered: <code>${fmt(c.unrecoveredZig)}</code> ZIG · Harvested: <code>${c.harvestedUsdt.toFixed(2)}</code> USDT` +
       (c.opportunityCostUsdt !== null ? ` · Opp.cost: <code>${c.opportunityCostUsdt.toFixed(2)}</code>` : "") +
+      (c.nearestRebuyTarget !== null ? `\nNext rebuy: ask ≤ <code>${c.nearestRebuyTarget.toFixed(6)}</code>` : "") +
       (acc
         ? `\n🟢 <b>Accumulation</b> open <code>${acc.openCount}</code> · recovered <code>${acc.principalRecoveredCount}</code>\n` +
           `Deployed: <code>${acc.usdtDeployed.toFixed(2)}</code> · Recovered: <code>${acc.usdtRecovered.toFixed(2)}</code> USDT · ` +

@@ -123,7 +123,8 @@ export class VirtualAccount {
     price: number,
     at: number,
     stateEngine: StateEngine,
-    kind: "harvest" | "accumulation" = "harvest"
+    kind: "harvest" | "accumulation" = "harvest",
+    intentPrice = price // submitted price (pre-slippage) — anchors sell bucket occupancy
   ): { fillId: string; feeUsdt: number } {
     const feeUsdt = price * size * (this.opts.takerFeeBps / 10_000);
     if (side === "buy") {
@@ -155,7 +156,7 @@ export class VirtualAccount {
     // the AccumulationEngine by the caller (separate tracker) — balances + cost basis
     // above are shared, cycle bookkeeping is not.
     if (kind === "harvest") {
-      if (side === "sell") this.tracker.onSell(fillId, size, price, feeUsdt);
+      if (side === "sell") this.tracker.onSell(fillId, size, price, feeUsdt, intentPrice);
       else this.tracker.onBuy(fillId, size, price, feeUsdt);
     }
 
