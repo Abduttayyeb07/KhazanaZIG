@@ -144,6 +144,7 @@ export class PaperSoak {
             minUsdtFloor: cfg.MIN_USDT_RESERVE_FLOOR,
             principalRecoveryPct: cfg.ACCUMULATION_PRINCIPAL_RECOVERY_PCT,
             takerFeeBps: cfg.PAPER_TAKER_FEE_BPS,
+            minOrderZig: cfg.MIN_ORDER_ZIG,
           },
           log
         )

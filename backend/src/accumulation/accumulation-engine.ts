@@ -55,6 +55,7 @@ export interface AccumulationParams {
   minUsdtFloor: number;
   principalRecoveryPct: number;
   takerFeeBps: number;
+  minOrderZig: number;
 }
 
 export class AccumulationEngine {
@@ -86,6 +87,14 @@ export class AccumulationEngine {
     const c = eligible[0];
     const qty = recoverySellQty(c.usdtSpent, this.p.principalRecoveryPct, c.usdtRecovered, ctx.bid);
     if (qty <= 0) return false;
+    // Slippage leaves a tiny principal residue after the main recovery sell; sizing
+    // REJECTS sub-min-order dust, and resubmitting it every tick (returning true)
+    // would starve harvest sells and accumulation buys indefinitely. Skip dust
+    // without consuming the tick's action slot.
+    if (qty < this.p.minOrderZig) {
+      this.reporter.intentBlocked("ACCUMULATION_RECOVERY_DUST");
+      return false;
+    }
     await this.submit("sell", qty, ctx.bid, "acc-recovery");
     return true;
   }

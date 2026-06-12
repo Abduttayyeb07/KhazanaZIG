@@ -94,8 +94,21 @@ export class HarvestDriver {
       const ask = m.bestAsk;
       const now = Date.now();
 
-      const pending = this.registry.openOrders().filter((o) => o.paper && o.exchange === this.p.exchange).length;
-      if (pending > 0) return; // one order in flight
+      // One order in flight — but a resting paper order (fill-probability miss, then
+      // price moved away from the limit) would freeze this gate FOREVER and silently.
+      // Cancel stale ones and make the wait visible in summaries.
+      const pendingOrders = this.registry.openOrders().filter((o) => o.paper && o.exchange === this.p.exchange);
+      if (pendingOrders.length > 0) {
+        const staleMs = Math.max(60_000, this.p.tickMs * 4);
+        for (const o of pendingOrders) {
+          if (now - o.createdAt > staleMs) {
+            await this.pipeline.cancel(o.clientOrderId);
+            this.log.warn({ clientOrderId: o.clientOrderId, ageMs: now - o.createdAt }, "Cancelled stale paper order");
+          }
+        }
+        this.reporter.intentBlocked("PENDING_ORDER_WAIT");
+        return;
+      }
 
       this.maybeClearBackoff(bid, ask);
       const { allowed, aggression } = this.zone();

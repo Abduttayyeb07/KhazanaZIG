@@ -138,14 +138,16 @@ function harness(opts: {
   avgCost?: number;
   sellOccupied?: boolean;
   harvestSell?: boolean; // zone gate for sells (default true)
+  pendingOrders?: ManagedOrder[];
 }) {
   const submits: { side: string; qty: number; price: number }[] = [];
   const blocked: string[] = [];
+  const cancelled: string[] = [];
   const pipeline = { submit: async (r: { side: string; quantity: number; price: number }) => {
     submits.push({ side: r.side, qty: r.quantity, price: r.price });
     return { accepted: opts.accepted ?? true, ...(opts.accepted === false ? { stage: "ADAPTER", reason: "x" } : { clientOrderId: "c", order: {} }), risk: { decision: "ALLOW", requestedQty: r.quantity, approvedQty: r.quantity, reasons: [], severity: "INFO" } } as unknown as PipelineDecision;
-  } } as unknown as ExecutionPipeline;
-  const registry = { openOrders: () => [] } as unknown as OrderRegistry;
+  }, cancel: async (id: string) => { cancelled.push(id); return true; } } as unknown as ExecutionPipeline;
+  const registry = { openOrders: () => opts.pendingOrders ?? [] } as unknown as OrderRegistry;
   const account = {
     avgCost: opts.avgCost ?? 0.05, activeZig: 1_000_000, usdtBalance: 15_000, startingActive: 1_000_000,
     unrecoveredZig: opts.unrecovered ?? 0,
@@ -160,7 +162,7 @@ function harness(opts: {
     aggression: "FULL" as const,
   });
   const driver = new HarvestDriver(stateEngine, pipeline, registry, account, reporter, { ...baseParams, ...opts.params }, zone, null, log);
-  return { driver, submits, blocked, setState: (s: SystemState) => { state = s; } };
+  return { driver, submits, blocked, cancelled, setState: (s: SystemState) => { state = s; } };
 }
 
 (async () => {
@@ -259,6 +261,24 @@ function harness(opts: {
     await h.driver.tick();                                   // rebuy gated → must NOT sell into dip
     ok("rebuy gated → sell held, not opened", h.submits.length === 1 && h.submits[0].side === "buy", JSON.stringify(h.submits));
     ok("SELL_HELD_FOR_REBUY recorded", h.blocked.includes("SELL_HELD_FOR_REBUY"));
+  }
+
+  // ── 3c. Stale pending order → cancel + visible wait (silent-freeze fix) ───────
+  // A resting paper order (fill-probability miss + price moved away) used to freeze
+  // the one-in-flight gate forever with zero reporting.
+  console.log("\n3c. Stale pending paper order handling");
+  {
+    const stale = { clientOrderId: "stale-1", paper: true, exchange: "bybit", createdAt: Date.now() - 120_000 } as ManagedOrder;
+    const h = harness({ state: makeState(0.052, 0.0521), pendingOrders: [stale] });
+    await h.driver.tick();
+    ok("stale order cancelled", h.cancelled.includes("stale-1"), JSON.stringify(h.cancelled));
+    ok("wait reported, nothing submitted", h.blocked.includes("PENDING_ORDER_WAIT") && h.submits.length === 0);
+  }
+  {
+    const fresh = { clientOrderId: "fresh-1", paper: true, exchange: "bybit", createdAt: Date.now() } as ManagedOrder;
+    const h = harness({ state: makeState(0.052, 0.0521), pendingOrders: [fresh] });
+    await h.driver.tick();
+    ok("fresh pending → wait visibly, no cancel", h.cancelled.length === 0 && h.submits.length === 0 && h.blocked.includes("PENDING_ORDER_WAIT"));
   }
 
   console.log(`\n══════ ${pass} passed, ${fail} failed ══════`);

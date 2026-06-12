@@ -62,7 +62,7 @@ console.log("\n3. Accumulation engine gates (all intents via pipeline)");
 const params: AccumulationParams = {
   exchange: "bybit", symbol: "ZIGUSDT", enabled: true, recoveryEnabled: true, trancheUsdt: 1000,
   cooldownMs: 0, bucketBps: 100, minLiquidityUsdt: 5000, maxSpreadBps: 150, allowHighVol: false,
-  allowChaotic: false, minUsdtFloor: 5000, principalRecoveryPct: 1.0, takerFeeBps: 10,
+  allowChaotic: false, minUsdtFloor: 5000, principalRecoveryPct: 1.0, takerFeeBps: 10, minOrderZig: 300,
 };
 const allowAcc: AllowedActions = { harvestSell: false, harvestRebuy: false, accumulationBuy: true, accumulationRecoverySell: true };
 function engine() {
@@ -114,6 +114,14 @@ void (async () => {
   h = engine();
   h.tracker.onBuy("b", 20408, 0.049, 1.0);
   ok("no recovery below target", !(await h.eng.attemptRecoverySell(ctx({ bid: 0.050 }))) && h.submits.length === 0);
+
+  // Dust residue must not consume the action slot (deadlock fix): sizing rejects
+  // sub-min-order sells, so resubmitting dust every tick would starve the driver.
+  h = engine();
+  h.tracker.onBuy("b", 20408, 0.049, 1.0);                  // principal ≈ 999.99 USDT
+  h.tracker.onRecoverySell("s0", 999 / 0.057, 0.057, 1.0);  // recover 999 → residue ≈ 1 USDT (~17 ZIG < 300 min)
+  ok("dust residue → blocked, no submit",
+    !(await h.eng.attemptRecoverySell(ctx({ bid: 0.057 }))) && h.submits.length === 0 && h.blocked.includes("ACCUMULATION_RECOVERY_DUST"));
 
   console.log(`\n══════ ${pass} passed, ${fail} failed ══════`);
   process.exit(fail === 0 ? 0 : 1);
