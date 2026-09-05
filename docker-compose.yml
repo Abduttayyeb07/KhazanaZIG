@@ -55,7 +55,7 @@ services:
       # Host side bound to loopback — the reverse proxy terminates TLS and forwards
       # here. The container itself must listen on 0.0.0.0 (API_HOST), or Docker's
       # forwarder cannot reach it.
-      - "127.0.0.1:3001:3001"
+      - "127.0.0.1:3101:3001"
     networks:
       - zig-net
     depends_on:
@@ -63,6 +63,25 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      target: runner
+      args:
+        # Empty = same-origin relative URLs. The proxy serves the dashboard and
+        # forwards /api and /ws to core-engine, so the browser needs no absolute
+        # host. Override only if the API lives on a different domain.
+        NEXT_PUBLIC_API_URL: "${PUBLIC_API_URL:-}"
+        NEXT_PUBLIC_WS_URL: "${PUBLIC_WS_URL:-}"
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3100:3000"
+    networks:
+      - zig-net
+    depends_on:
+      - core-engine
 
 volumes:
   postgres_data:

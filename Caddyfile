@@ -1,0 +1,37 @@
+# Reverse proxy for the ZIG Khazana console.
+#
+# Everything is served from ONE origin: Caddy terminates TLS, serves the dashboard,
+# and forwards /api and /ws to the engine. That is what lets the browser use
+# relative URLs, and it is why the session cookie works — a cookie set by the API
+# on a different host would be third-party and dropped by most browsers.
+#
+# Caddy obtains and renews the certificate automatically; point your DNS A record
+# at this server first, or the ACME challenge fails.
+#
+#   sudo apt install caddy
+#   sudo cp Caddyfile /etc/caddy/Caddyfile     # replace the domain below
+#   sudo systemctl reload caddy
+
+REPLACE-with-your-domain {
+	encode zstd gzip
+
+	# WebSocket for live state. Caddy passes the Upgrade headers through, but the
+	# path has to be matched before the catch-all or it would reach the dashboard.
+	@ws path /ws
+	reverse_proxy @ws 127.0.0.1:3101
+
+	# API + control plane. The operator token and session cookie cross here, which
+	# is precisely why this must be HTTPS and not a raw port.
+	reverse_proxy /api/* 127.0.0.1:3101
+	reverse_proxy /health 127.0.0.1:3101
+
+	# Everything else is the dashboard.
+	reverse_proxy 127.0.0.1:3100
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+	}
+}
