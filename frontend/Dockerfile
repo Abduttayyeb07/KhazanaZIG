@@ -28,10 +28,15 @@ ENV HOSTNAME=0.0.0.0
 WORKDIR /app
 
 # `output: "standalone"` produces a server plus exactly the modules it reaches.
-# static/ and public/ are NOT included by Next and must be copied separately.
+# In a pnpm workspace it lands as standalone/frontend/server.js alongside a
+# hoisted standalone/node_modules, so copying the directory's CONTENTS to /app
+# puts the server at /app/frontend/server.js — which is what CMD runs.
+#
+# static/ is deliberately excluded by Next from standalone and must be copied
+# separately. There is no public/ directory in this project; adding a COPY for
+# one that does not exist fails the build outright rather than being skipped.
 COPY --from=builder /app/frontend/.next/standalone ./
 COPY --from=builder /app/frontend/.next/static ./frontend/.next/static
-COPY --from=builder /app/frontend/public ./frontend/public
 
 USER node
 EXPOSE 3000
