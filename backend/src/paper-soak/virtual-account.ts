@@ -135,8 +135,12 @@ export class VirtualAccount {
     });
   }
 
+  // Executed fills only. The PAPER-OPENING entry is the synthetic seed that gives
+  // the harvester a cost basis — it is a ledger row, not a trade the engine made.
+  // Shown in the fills feed it reads as a single enormous BUY (6,000,000 ZIG ≈
+  // 272,000 USDT on a 15,000 USDT account), which is alarming and untrue.
   recentFills(limit = 10): ExchangeFill[] {
-    return this.fills.slice(-limit).reverse();
+    return this.fills.filter((f) => f.fillId !== "PAPER-OPENING").slice(-limit).reverse();
   }
 
   // ── Cycle tracking surface (drives driver gates + reporting) ──────────────
