@@ -12,3 +12,4 @@ backend/data/
 prisma/migrations/
 graphify-out
 docs
+.env.server

@@ -14,20 +14,34 @@ import path from "node:path";
 const backendDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(backendDir, "..");
 
-await build({
-  entryPoints: [path.join(backendDir, "src/main.ts")],
-  bundle: true,
-  platform: "node",
-  target: "node22",
-  format: "cjs",
-  outfile: path.join(backendDir, "dist/main.js"),
-  packages: "external",
-  alias: {
-    "@zig/shared-types": path.join(repoRoot, "packages/shared-types/src/index.ts"),
-    "@zig/logger": path.join(repoRoot, "packages/logger/src/index.ts"),
-    "@zig/config": path.join(repoRoot, "packages/config/src/index.ts"),
-  },
-  logLevel: "info",
-});
+// Operator CLIs ship alongside the engine. Creating the first dashboard user is a
+// deployment step, not a development one, so it must not depend on the dev
+// toolchain: the runtime image never builds the @zig/* packages to dist (esbuild
+// inlines them from source), so running the .ts entry with tsx inside the
+// container fails to resolve "@zig/config".
+const entries = [
+  { in: "src/main.ts", out: "main" },
+  { in: "src/auth/add-user.ts", out: "add-user" },
+];
 
-console.log("esbuild: backend bundled -> dist/main.js (workspace packages inlined)");
+const alias = {
+  "@zig/shared-types": path.join(repoRoot, "packages/shared-types/src/index.ts"),
+  "@zig/logger": path.join(repoRoot, "packages/logger/src/index.ts"),
+  "@zig/config": path.join(repoRoot, "packages/config/src/index.ts"),
+};
+
+for (const entry of entries) {
+  await build({
+    entryPoints: [path.join(backendDir, entry.in)],
+    bundle: true,
+    platform: "node",
+    target: "node22",
+    format: "cjs",
+    outfile: path.join(backendDir, `dist/${entry.out}.js`),
+    packages: "external",
+    alias,
+    logLevel: "info",
+  });
+}
+
+console.log(`esbuild: bundled -> ${entries.map((e) => `dist/${e.out}.js`).join(", ")} (workspace packages inlined)`);
