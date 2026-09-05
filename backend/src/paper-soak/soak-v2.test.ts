@@ -6,6 +6,7 @@ import type { ExecutionPipeline, PipelineDecision } from "../execution-engine/pi
 import type { OrderRegistry } from "../execution-engine/registry.js";
 import { PaperEngine } from "../execution-engine/paper-engine.js";
 import { CycleTracker, type HarvestCycle } from "./cycle-tracker.js";
+import { rebuyDistanceBps } from "./rebuy-distance.js";
 import { HarvestDriver, type HarvestParams } from "./harvest-driver.js";
 import type { VirtualAccount } from "./virtual-account.js";
 import type { SoakReporter } from "./reporter.js";
@@ -279,6 +280,41 @@ function harness(opts: {
     const h = harness({ state: makeState(0.052, 0.0521), pendingOrders: [fresh] });
     await h.driver.tick();
     ok("fresh pending → wait visibly, no cancel", h.cancelled.length === 0 && h.submits.length === 0 && h.blocked.includes("PENDING_ORDER_WAIT"));
+  }
+
+  // ── 4. Dynamic rebuy distance (operating plan: low 3-4% · med 4-6% · high 5-8%)
+  console.log("\n4. Dynamic rebuy distance scales with volatility regime");
+  {
+    const cfg = { minBps: 300, lowVolBps: 350, normalVolBps: 500, highVolBps: 650, chaoticBps: 800 };
+    ok("LOW → 350bps", rebuyDistanceBps("LOW", cfg) === 350, rebuyDistanceBps("LOW", cfg));
+    ok("NORMAL → 500bps", rebuyDistanceBps("NORMAL", cfg) === 500, rebuyDistanceBps("NORMAL", cfg));
+    ok("HIGH → 650bps", rebuyDistanceBps("HIGH", cfg) === 650, rebuyDistanceBps("HIGH", cfg));
+    ok("CHAOTIC → 800bps", rebuyDistanceBps("CHAOTIC", cfg) === 800, rebuyDistanceBps("CHAOTIC", cfg));
+    ok("distance widens monotonically with volatility",
+      rebuyDistanceBps("LOW", cfg) < rebuyDistanceBps("NORMAL", cfg) &&
+      rebuyDistanceBps("NORMAL", cfg) < rebuyDistanceBps("HIGH", cfg) &&
+      rebuyDistanceBps("HIGH", cfg) < rebuyDistanceBps("CHAOTIC", cfg));
+
+    // The floor must win, or a mis-set regime value could place a rebuy target at or
+    // above its own sell price and the cycle would close for free.
+    const tooTight = { minBps: 400, lowVolBps: 50, normalVolBps: 60, highVolBps: 70, chaoticBps: 80 };
+    ok("MIN floor overrides a too-tight regime value", rebuyDistanceBps("LOW", tooTight) === 400, rebuyDistanceBps("LOW", tooTight));
+
+    // A cycle carries the distance that was appropriate when it opened.
+    const t = new CycleTracker("dyn", "bybit", "ZIGUSDT", 300);
+    t.onSell("calm", 1000, 0.06, 0, 0.06, rebuyDistanceBps("LOW", cfg));
+    t.onSell("wild", 1000, 0.06, 0, 0.06, rebuyDistanceBps("HIGH", cfg));
+    const [calm, wild] = t.all();
+    ok("calm-market cycle target = 0.0579", Math.abs(calm.rebuyTargetPrice - 0.06 * (1 - 0.035)) < 1e-9, calm.rebuyTargetPrice);
+    ok("volatile-market cycle target = 0.0561", Math.abs(wild.rebuyTargetPrice - 0.06 * (1 - 0.065)) < 1e-9, wild.rebuyTargetPrice);
+    ok("volatile cycle demands a deeper dip", wild.rebuyTargetPrice < calm.rebuyTargetPrice);
+    ok("distance recorded on the cycle", calm.rebuyDistanceBps === 350 && wild.rebuyDistanceBps === 650);
+
+    // A shallow dip closes only the calm cycle; the volatile one keeps waiting.
+    // Probed just inside each band rather than exactly on it — the targets are
+    // floating-point products, so an exact-boundary probe tests FP rounding, not policy.
+    ok("shallow dip fills only the calm cycle", t.openCyclesForRebuy(0.0578).length === 1, t.openCyclesForRebuy(0.0578).length);
+    ok("deep dip fills both", t.openCyclesForRebuy(0.0560).length === 2, t.openCyclesForRebuy(0.0560).length);
   }
 
   console.log(`\n══════ ${pass} passed, ${fail} failed ══════`);

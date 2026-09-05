@@ -48,6 +48,8 @@ export class OrderRegistry extends EventEmitter {
       status: "CREATED",
       source: req.source,
       reason: req.reason,
+      cycleIds: req.cycleIds ? [...req.cycleIds] : undefined,
+      rebuyDistanceBps: req.rebuyDistanceBps,
       exchangeOrderId: null,
       paper,
       createdAt: now,

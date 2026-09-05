@@ -25,6 +25,7 @@ export interface HarvestCycle {
   sellIntentPrice: number; // submitted bid — bucket anchor (fill price is slipped below it)
   avgRebuyPrice?: number;
   rebuyTargetPrice: number;
+  rebuyDistanceBps: number; // regime-scaled distance this cycle was opened with
   grossSellUsdt: number;
   spentRebuyUsdt: number;
   estimatedFeesUsdt: number;
@@ -70,7 +71,17 @@ export class CycleTracker {
   // `intentPrice` is the submitted bid; it anchors bucket occupancy because the fill
   // price is slipped BELOW the bid — gating on bid but recording the slipped fill let
   // a 12bps slip defeat 15bps buckets (255 sells across ~19 buckets on Jun-11).
-  onSell(fillId: string, qty: number, price: number, feeUsdt: number, intentPrice = price): HarvestCycle {
+  // `distanceBps` is resolved per sell from the volatility regime at fill time
+  // (see rebuy-distance.ts), so each cycle carries the target that was appropriate to
+  // the market that created it. Defaults to the tracker's fixed distance.
+  onSell(
+    fillId: string,
+    qty: number,
+    price: number,
+    feeUsdt: number,
+    intentPrice = price,
+    distanceBps = this.rebuyDistanceBps
+  ): HarvestCycle {
     const now = Date.now();
     const cycle: HarvestCycle = {
       cycleId: `${this.runId}-c${++this.seq}`,
@@ -85,7 +96,8 @@ export class CycleTracker {
       unrecoveredQty: qty,
       avgSellPrice: price,
       sellIntentPrice: intentPrice,
-      rebuyTargetPrice: price * (1 - this.rebuyDistanceBps / 10_000),
+      rebuyTargetPrice: price * (1 - distanceBps / 10_000),
+      rebuyDistanceBps: distanceBps,
       grossSellUsdt: price * qty,
       spentRebuyUsdt: 0,
       estimatedFeesUsdt: feeUsdt,
@@ -105,10 +117,10 @@ export class CycleTracker {
   // the bought ZIG recovers nothing — cycles strand (rebought > 0, done = 0). FIFO
   // over all open cycles pays down the oldest obligation first; profitability is still
   // captured honestly in harvestedUsdt = grossSell − spentRebuy − fees.
-  onBuy(fillId: string, qty: number, price: number, feeUsdt: number): void {
+  onBuy(fillId: string, qty: number, price: number, feeUsdt: number, cycleIds?: string[]): void {
     let remaining = qty;
     const eligible = this.cycles
-      .filter((c) => c.unrecoveredQty > EPS)
+      .filter((c) => c.unrecoveredQty > EPS && (!cycleIds || cycleIds.includes(c.cycleId)))
       .sort((a, b) => a.openedAt - b.openedAt);
     const totalFeeBase = qty > 0 ? feeUsdt / qty : 0; // spread the buy fee across allocated qty
 

@@ -23,12 +23,11 @@ import { CredentialStore } from "./session/credential-store.js";
 import { SessionManager, type AuthenticatedExchangeClient } from "./session/session-manager.js";
 import { getPrisma, connectDatabase, disconnectDatabase } from "./database/client.js";
 import { TreasuryEngine } from "./treasury/engine.js";
-import { TelegramNotifier } from "./telegram/notifier.js";
 import { ApiServer } from "./api/server.js";
 import { SoakController } from "./paper-soak/controller.js";
-import { TelegramCommandListener } from "./telegram/command-listener.js";
 import type { DashboardPayload } from "./api/server.js";
 import { AuditLog } from "./api/audit.js";
+import { Notifier } from "./notify/notifier.js";
 import { validateCredentialBody, validateExchangeOnly, validateOrderBody } from "./api/middleware/sanitize-body.js";
 import { AppUserStore, SESSION_COOKIE, clearSessionCookie, sessionCookie } from "./auth/user-store.js";
 
@@ -38,9 +37,6 @@ async function main() {
   const cfg = getConfig();
   const startedAt = Date.now();
   log.info({ mode: cfg.OPERATIONAL_MODE, symbol: cfg.TRADING_SYMBOL }, "Core engine starting");
-
-  // ── 1. Telegram ───────────────────────────────────────────────────────────
-  const tg = new TelegramNotifier(cfg.TELEGRAM_BOT_TOKEN, cfg.TELEGRAM_CHAT_ID, log);
 
   // ── 2. API Server (control-plane: operator token + audit + rate limit) ───
   const audit = new AuditLog(log);
@@ -52,6 +48,10 @@ async function main() {
     sessionCookieName: SESSION_COOKIE,
     validateSessionToken: (token) => appUsers?.validateSessionToken(token) ?? Promise.resolve(false),
   });
+
+  // Operational feed: everything the engine used to announce over Telegram now
+  // lands in the dashboard event log.
+  const notifier = new Notifier(api, log);
 
   // ── 3. State Engine + Mode Controller ─────────────────────────────────────
   const stateEngine = new StateEngine(log);
@@ -67,8 +67,7 @@ async function main() {
 
   let sessionActive = false;
   let reconciler: ReconciliationEngine | null = null;
-  let soakController: SoakController | null = null;
-  let cmdListener: TelegramCommandListener | null = null;
+  let soakController: SoakController;
 
   // ── 4b. Treasury accounting engine (derives financial state from fills) ───
   const treasury = new TreasuryEngine(
@@ -81,7 +80,7 @@ async function main() {
   // Latest ZIG mark price — prefer Bybit mid, else MEXC mid.
   const markPrice = (): number | null => {
     const s = stateEngine.getState();
-    return s.market.bybit?.midPrice ?? s.market.mexc?.midPrice ?? null;
+    return s.market.mexc?.midPrice ?? s.market.bybit?.midPrice ?? null;
   };
 
   // ── 5. Market data WebSockets (public — no credentials) ──────────────────
@@ -89,16 +88,18 @@ async function main() {
   const bybitWs = factory.createBybitWebSocket(cfg.TRADING_SYMBOL);
   const mexcWs = factory.createMexcWebSocket(cfg.TRADING_SYMBOL);
 
-  bybitWs.on("connected", () => { api.addEvent("info", "Bybit WebSocket connected"); broadcastState(); });
-  bybitWs.on("disconnected", ({ code }: { code: number }) => { api.addEvent("warn", `Bybit WS disconnected (${code})`); broadcastState(); });
-  bybitWs.on("staleStream", ({ staleMs }: { staleMs: number }) => api.addEvent("warn", `Bybit stale ${staleMs}ms`));
+  if (cfg.BYBIT_ENABLED) {
+    bybitWs.on("connected", () => { api.addEvent("info", "Bybit WebSocket connected"); broadcastState(); });
+    bybitWs.on("disconnected", ({ code }: { code: number }) => { api.addEvent("warn", `Bybit WS disconnected (${code})`); broadcastState(); });
+    bybitWs.on("staleStream", ({ staleMs }: { staleMs: number }) => api.addEvent("warn", `Bybit stale ${staleMs}ms`));
+  }
 
   mexcWs.on("connected", () => { api.addEvent("info", "MEXC WebSocket connected"); broadcastState(); });
   mexcWs.on("disconnected", ({ code }: { code: number }) => { api.addEvent("warn", `MEXC WS disconnected (${code})`); broadcastState(); });
   mexcWs.on("staleStream", ({ staleMs }: { staleMs: number }) => api.addEvent("warn", `MEXC stale ${staleMs}ms`));
 
   // ── 6. Market Ingestion ───────────────────────────────────────────────────
-  const ingestion = new MarketIngestionPipeline(bybitWs, mexcWs, cfg.TRADING_SYMBOL, stateEngine, log);
+  const ingestion = new MarketIngestionPipeline(bybitWs, mexcWs, cfg.TRADING_SYMBOL, stateEngine, log, { bybitEnabled: cfg.BYBIT_ENABLED });
   ingestion.start();
 
   // ── 7. Execution Engine (Phase 4 — PAPER_MODE only; no real adapter yet) ──
@@ -136,44 +137,15 @@ async function main() {
     log
   );
 
-  // ── 7b. Paper soak (live-market forward test) — Telegram-controlled ──────
-  // The soak controller owns the virtual account + harvest driver and is driven
-  // by Telegram commands (/soak_start flips the engine into PAPER_MODE; /soak_stop
-  // returns it to READ_ONLY). The harvest driver paper-trades only — it can never
-  // originate intents against real funds.
-  if (cfg.TELEGRAM_BOT_TOKEN && cfg.TELEGRAM_CHAT_ID) {
-    soakController = new SoakController({
-      cfg, stateEngine, pipeline, registry: orderRegistry, modeController, tg, markFn: markPrice, log,
-    });
-    cmdListener = new TelegramCommandListener(
-      cfg.TELEGRAM_BOT_TOKEN, cfg.TELEGRAM_CHAT_ID, cfg.TELEGRAM_ALLOWED_USER_IDS, tg, log
-    );
-    cmdListener.on("/addusers", async (args, reply) => {
-      if (!appUsers || !dbConnected) {
-        reply("User database unavailable. Run with Postgres and apply the Prisma schema first.");
-        return;
-      }
-      const [email, ...passwordParts] = args;
-      if (!email) {
-        reply("Usage: <code>/addusers email@example.com optionalStrongPassword1</code>");
-        return;
-      }
-      try {
-        const created = await appUsers.createUser(email, passwordParts.join(" ") || undefined);
-        reply(
-          `<b>Dashboard user ready</b>\n` +
-          `Email: <code>${created.email}</code>\n` +
-          `Password: <code>${created.password}</code>\n` +
-          `${created.generated ? "Generated password. Store it now; it will not be shown again." : "Password set from command."}`
-        );
-      } catch (err) {
-        reply(`Could not add user: ${err instanceof Error ? err.message : "error"}`);
-      }
-    });
-    soakController.register(cmdListener);
-  } else {
-    log.warn("Telegram not configured — soak control + reporting unavailable");
-  }
+  // ── 7b. Paper soak (live-market forward test) — dashboard-controlled ──────
+  // The soak controller owns the virtual account + harvest driver. It is driven
+  // from the dashboard (POST /api/operator/soak/start | stop) and NEVER starts on
+  // its own. The harvest driver paper-trades only — it can never originate intents
+  // against real funds.
+  soakController = new SoakController({
+    cfg, stateEngine, pipeline, registry: orderRegistry, modeController,
+    notifier, markFn: markPrice, log,
+  });
 
   // A confirmed REAL fill flows into FILL_RECEIVED → treasury ledger + account state.
   // PAPER fills are simulation artifacts: they stay ONLY in the execution view
@@ -247,6 +219,7 @@ async function main() {
     pipeline.setRealAdapter(realRouter);
 
     // (Re)start reconciliation on the new authenticated client
+    clearInterval(heartbeat);
     reconciler?.stop();
     reconciler = new ReconciliationEngine(
       authClient,
@@ -266,7 +239,7 @@ async function main() {
       api.addEvent(level, `Reconciliation ${result.exchange.toUpperCase()}: ${result.status} (${result.issues.length} issues)`);
 
       const icon = result.status === "MATCH" ? "✅" : result.status === "CRITICAL_DRIFT" ? "🛑" : "⚠️";
-      tg.notify(
+      notifier.notify(
         `📊 <b>Reconciliation</b> — ${result.exchange.toUpperCase()}\n` +
         `Status: ${icon} <code>${result.status}</code>\n` +
         `Issues: ${result.issues.length} | Repaired: ${result.repaired}` +
@@ -332,6 +305,27 @@ async function main() {
 
   // OPERATOR (control plane) — /api/operator/* auto-requires operator token,
   // rate limiting, and is audit-logged centrally by the ApiServer.
+
+  // Paper soak start/stop. The soak NEVER auto-starts from the dashboard: it runs
+  // only between an explicit start and stop, and start() flips the engine into
+  // PAPER_MODE while stop() returns it to READ_ONLY. Simulated orders only.
+  api.route("POST", "/api/operator/soak/start", async ({ ip, send }) => {
+    const result = await soakController.start();
+    audit.record({ action: "SOAK_START", ip, success: result.ok, detail: result.error ?? "started" });
+    api.addEvent(result.ok ? "info" : "warn", result.ok ? "Paper soak STARTED by operator" : `Soak start failed: ${result.error}`);
+    broadcastState();
+    if (!result.ok) return send(409, { error: result.error, running: soakController.running });
+    send(200, { ok: true, running: soakController.running });
+  });
+
+  api.route("POST", "/api/operator/soak/stop", async ({ ip, send }) => {
+    const result = soakController.stop();
+    audit.record({ action: "SOAK_STOP", ip, success: result.ok, detail: result.error ?? "stopped" });
+    api.addEvent(result.ok ? "info" : "warn", result.ok ? "Paper soak STOPPED by operator" : `Soak stop failed: ${result.error}`);
+    broadcastState();
+    if (!result.ok) return send(409, { error: result.error, running: soakController.running });
+    send(200, { ok: true, running: soakController.running });
+  });
   api.route("POST", "/api/operator/credentials", async ({ body, ip, send }) => {
     if (!dbConnected) return send(503, { error: "Database unavailable — cannot persist credentials" });
 
@@ -347,7 +341,7 @@ async function main() {
 
     audit.record({ action: "CREDENTIALS_SUBMIT", ip, success: true, exchange: v.value.exchange });
     api.addEvent("info", `Credentials submitted for ${v.value.exchange.toUpperCase()}`);
-    tg.notify(`🔑 <b>Credentials added</b> for ${v.value.exchange.toUpperCase()} — session active`);
+    notifier.notify(`🔑 <b>Credentials added</b> for ${v.value.exchange.toUpperCase()} — session active`);
     send(200, { ok: true, status: await sessionManager.status() });
   });
 
@@ -369,7 +363,8 @@ async function main() {
     if (remaining) {
       await enableAuthenticatedServices(remaining);
     } else {
-      reconciler?.stop();
+      clearInterval(heartbeat);
+    reconciler?.stop();
       reconciler = null;
       sessionActive = false;
       pipeline.setRealAdapter(null); // no auth → real placement disabled (fail-safe)
@@ -453,12 +448,13 @@ async function main() {
 
   api.start(cfg.API_HOST, cfg.API_PORT);
 
-  // Begin listening for Telegram commands (/soak_start, /status, ...).
-  cmdListener?.start();
-  // Optional auto-start at boot (PAPER_SOAK_ENABLED). The controller flips the
-  // engine into PAPER_MODE itself, so this never touches real funds.
-  if (soakController && cfg.PAPER_SOAK_ENABLED) {
-    void soakController.start((t) => tg.notify(t));
+  // Optional auto-start at boot (PAPER_SOAK_ENABLED, default false). Normally the
+  // soak stays stopped until the operator presses START on the dashboard.
+  if (cfg.PAPER_SOAK_ENABLED) {
+    void soakController.start().then((r) => {
+      if (!r.ok) log.warn({ error: r.error }, "Auto-start of paper soak failed");
+      broadcastState();
+    });
   }
 
   // ── 11. State broadcast ───────────────────────────────────────────────────
@@ -480,7 +476,7 @@ async function main() {
   // Durable treasury snapshots every 5 min (history graph + audit baseline)
   treasury.startSnapshots(5 * 60 * 1_000, markPrice);
 
-  function broadcastState(): void {
+  function buildPayload(): DashboardPayload {
     const state = stateEngine.getState();
     const bybit = state.market.bybit;
     const mexc = state.market.mexc;
@@ -492,6 +488,19 @@ async function main() {
       mode: state.mode,
       hasSession: sessionActive,
       symbol: cfg.TRADING_SYMBOL,
+      // Sourced from config, never duplicated client-side, so the chart's bands
+      // and the zone classifier can never drift apart.
+      zones: {
+        activeBandLow: cfg.ACTIVE_BAND_LOW,
+        activeBandHigh: cfg.ACTIVE_BAND_HIGH,
+        zoneALow: cfg.ZONE_A_LOW,
+        zoneAHigh: cfg.ZONE_A_HIGH,
+        zoneBLow: cfg.ZONE_B_LOW,
+        zoneBHigh: cfg.ZONE_B_HIGH,
+        zoneCLow: cfg.ZONE_C_LOW,
+        zoneCHigh: cfg.ZONE_C_HIGH,
+        reserveFloor: cfg.RESERVE_FLOOR,
+      },
       exchanges: {
         bybit: {
           wsStatus: wsState(bybitWs) as "CONNECTED" | "RECONNECTING" | "DISCONNECTED",
@@ -529,22 +538,35 @@ async function main() {
           createdAt: o.createdAt,
         })),
       },
+      soak: soakController.snapshot(),
       events: api.getEvents(),
       startedAt,
       updatedAt: Date.now(),
     };
-    api.broadcast(payload);
+    return payload;
   }
+
+  function broadcastState(): void {
+    api.broadcast(buildPayload());
+  }
+
+  // A dashboard connecting mid-quiet-spell would otherwise render an empty shell
+  // until the next engine event.
+  api.setSnapshotProvider(buildPayload);
+
+  // Heartbeat so elapsed time, NAV and zone stay live even when the market is
+  // quiet and no event fires. Cheap: one JSON payload to the open sockets.
+  const heartbeat = setInterval(broadcastState, 5_000);
 
   // ── 12. Graceful shutdown ─────────────────────────────────────────────────
   async function shutdown(signal: string) {
     log.warn({ signal }, "[CRITICAL] Shutdown signal received");
     api.addEvent("error", `Engine stopping: ${signal}`);
     broadcastState();
-    tg.notify(`🔴 <b>Core engine stopping</b>\nSignal: ${signal}`);
+    notifier.notify(`🔴 <b>Core engine stopping</b>\nSignal: ${signal}`);
     modeController.halt(`Shutdown: ${signal}`, "system");
-    cmdListener?.stop();
-    soakController?.stop(() => undefined);
+    soakController.stop();
+    clearInterval(heartbeat);
     reconciler?.stop();
     treasury.stop();
     ingestion.stop();
@@ -561,12 +583,9 @@ async function main() {
   api.addEvent("info", `Engine started — mode: ${cfg.OPERATIONAL_MODE}`);
   broadcastState();
 
-  tg.notify(
-    `🟢 <b>ZIG KHAZANA Core Engine started</b>\n` +
-    `Mode: <code>${cfg.OPERATIONAL_MODE}</code>\n` +
-    `Symbol: <code>${cfg.TRADING_SYMBOL}</code>\n` +
-    `Session: ${sessionActive ? "Active" : "None"}\n` +
-    (soakController ? `\nSend <code>/help</code> for paper-soak commands.` : `Dashboard: http://localhost:3000`)
+  notifier.notify(
+    `Engine started — mode ${cfg.OPERATIONAL_MODE}, symbol ${cfg.TRADING_SYMBOL}. ` +
+    `Simulation is stopped; press Start on the dashboard to begin.`
   );
 }
 

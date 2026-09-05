@@ -21,10 +21,11 @@ export class SizingEngine {
       });
       caps.push({
         reason: "DAILY_SELL_LIMIT",
-        qty: Math.max(ctx.treasuryState.activeInventory * this.cfg.maxDailySellActivePct - ctx.dailySellUsedZig, 0),
+        qty: Math.max((ctx.treasuryState.dailySellBaseZig ?? ctx.treasuryState.activeInventory) * this.cfg.maxDailySellActivePct - ctx.dailySellUsedZig, 0),
       });
     } else {
-      const affordableByUsdt = ctx.request.price > 0 ? ctx.treasuryState.usdtBalance / ctx.request.price : 0;
+      const costFactor = ctx.mode === "PAPER_MODE" ? (1 + (this.cfg.paperFeeBps ?? 0)/10000) * (1 + (this.cfg.paperSlippageBps ?? 0)/10000) : 1;
+      const affordableByUsdt = ctx.request.price > 0 ? ctx.treasuryState.usdtBalance / (ctx.request.price * costFactor) : 0;
       caps.push({ reason: "USDT_AFFORDABILITY", qty: affordableByUsdt });
       caps.push({
         reason: "LIQUIDITY_CAP",
@@ -33,7 +34,7 @@ export class SizingEngine {
       caps.push({
         reason: "DAILY_BUY_LIMIT",
         qty: ctx.request.price > 0
-          ? Math.max(ctx.treasuryState.usdtBalance * this.cfg.maxDailyBuyUsdtPct - ctx.dailyBuyUsedUsdt, 0) / ctx.request.price
+          ? Math.max((ctx.treasuryState.dailyBuyBaseUsdt ?? ctx.treasuryState.usdtBalance) * this.cfg.maxDailyBuyUsdtPct - ctx.dailyBuyUsedUsdt, 0) / (ctx.request.price * costFactor)
           : 0,
       });
     }

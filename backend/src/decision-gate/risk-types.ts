@@ -13,6 +13,8 @@ export interface RiskDecision {
 }
 
 export interface RiskConfig {
+  paperFeeBps?: number;
+  paperSlippageBps?: number;
   maxOrderActivePct: number;
   maxDailySellActivePct: number;
   maxDailyBuyUsdtPct: number;
@@ -48,6 +50,8 @@ export interface RiskContext {
     reserveFloor: number;
     usdtBalance: number;
     averageCost?: number;
+    dailySellBaseZig?: number;
+    dailyBuyBaseUsdt?: number;
   };
   reconciliationStatus: DriftStatus | null;
   exchangeHealth: {

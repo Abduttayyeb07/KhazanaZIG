@@ -54,6 +54,7 @@ interface Backoff {
 
 export class HarvestDriver {
   private sellCooldownUntil = 0;
+  private lastSellPrice = 0;
   private readonly buyBucketUntil = new Map<number, number>();
   private sellBackoff: Backoff | null = null;
   private buyBackoff: Backoff | null = null;
@@ -93,6 +94,7 @@ export class HarvestDriver {
       const bid = m.bestBid;
       const ask = m.bestAsk;
       const now = Date.now();
+      if (m.orderbookFreshnessMs + Math.max(0, now - m.timestamp) > 5_000) return;
 
       // One order in flight — but a resting paper order (fill-probability miss, then
       // price moved away from the limit) would freeze this gate FOREVER and silently.
@@ -110,6 +112,7 @@ export class HarvestDriver {
         return;
       }
 
+      if (this.account.unrecoveredZig < 1e-6) this.lastSellPrice = 0;
       this.maybeClearBackoff(bid, ask);
       const { allowed, aggression } = this.zone();
 
@@ -118,7 +121,7 @@ export class HarvestDriver {
             bid,
             ask,
             spreadBps: m.spreadBps ?? Number.POSITIVE_INFINITY,
-            liquidityUsdt: (m.askLiquidity ?? 0) * ask,
+            liquidityUsdt: m.askLiquidity ?? 0,
             regime: m.volatilityRegime,
             allowed,
             usdtBalance: this.account.usdtBalance,
@@ -135,7 +138,7 @@ export class HarvestDriver {
         const buyBackoffOk = !this.buyBackoff || now >= this.buyBackoff.until;
         const desired = rebuyEligible.reduce((s, c) => s + c.unrecoveredQty, 0);
         if (buyBucketOk && buyBackoffOk && desired >= this.p.minOrderZig) {
-          await this.submit("buy", desired, ask, now);
+          await this.submit("buy", desired, ask, now, rebuyEligible.map(c => c.cycleId));
           return;
         }
       }
@@ -152,16 +155,20 @@ export class HarvestDriver {
         if (rebuyEligible.length > 0) {
           this.reporter.intentBlocked("SELL_HELD_FOR_REBUY");
         } else {
-          const active = this.account.activeZig;
+          const accHeld = this.acc ? this.acc.heldZig() - this.acc.metrics().surplusZig : 0;
+          const active = Math.max(0, this.account.activeZig - accHeld);
           const cooldownOk = now >= this.sellCooldownUntil;
-          const bucketOk = !this.account.sellBucketOccupied(bid, this.p.sellBucketBps);
+          const spacing = this.p.sellBucketBps * (aggression === "REDUCED" ? 2 : 1);
+          const bucketOk = !this.account.sellBucketOccupied(bid, spacing) &&
+            (this.lastSellPrice === 0 || bid >= this.lastSellPrice * (1 + spacing / 10_000));
           const backoffOk = !this.sellBackoff || now >= this.sellBackoff.until;
           if (cooldownOk && bucketOk && backoffOk && active >= this.p.minOrderZig) {
             if (this.account.unrecoveredZig >= this.account.startingActive * this.p.maxUnrecoveredActivePct) {
               this.reporter.intentBlocked("ACTIVE_DEPLOYMENT_CAP");
             } else {
               const mult = aggression === "REDUCED" ? 0.5 : 1;
-              const desired = Math.max(active * this.p.maxOrderActivePct * mult, this.p.minOrderZig);
+              const remainingCap = this.account.startingActive * this.p.maxUnrecoveredActivePct - this.account.unrecoveredZig;
+              const desired = Math.min(Math.max(active * this.p.maxOrderActivePct * mult, this.p.minOrderZig), remainingCap);
               await this.submit("sell", desired, bid, now);
               return;
             }
@@ -180,9 +187,10 @@ export class HarvestDriver {
     }
   }
 
-  private async submit(side: "buy" | "sell", quantity: number, price: number, now: number): Promise<void> {
+  private async submit(side: "buy" | "sell", quantity: number, price: number, now: number, cycleIds?: string[]): Promise<void> {
     const req: ExecutionRequest = {
       requestId: randomUUID(),
+      cycleIds,
       exchange: this.p.exchange,
       symbol: this.p.symbol,
       side,
@@ -199,7 +207,7 @@ export class HarvestDriver {
     if (result.risk) this.reporter.decision({ side, quantity, price }, result.risk);
 
     if (result.accepted) {
-      if (side === "sell") this.sellCooldownUntil = now + this.p.sellCooldownMs;
+      if (side === "sell") { this.sellCooldownUntil = now + this.p.sellCooldownMs; this.lastSellPrice = price; }
       else this.buyBucketUntil.set(priceBucketId(price, this.p.buyBucketBps), now + this.p.buyCooldownMs);
     } else {
       const backoff: Backoff = { until: now + this.p.rejectBackoffMs, price };

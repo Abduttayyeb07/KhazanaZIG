@@ -15,10 +15,16 @@ export function buildRiskContext(
   const balances = state.balances[request.exchange];
   const base = balances.find((b) => b.asset === cfg.baseAsset);
   const quote = balances.find((b) => b.asset === cfg.quoteAsset);
-  const totalBase = base?.total ?? 0;
-  const reserveInventory = Math.min(totalBase, cfg.reserveFloor);
+  const paper = state.mode === "PAPER_MODE" ? state.paperRisk?.[request.exchange] : undefined;
+  const totalBase = paper?.zig ?? base?.total ?? 0;
+  const reserveFloor = Math.max(cfg.reserveFloor, paper?.protectedZig ?? 0);
+  const reserveInventory = Math.min(totalBase, reserveFloor);
   const activeInventory = Math.max(totalBase - reserveInventory - committedOpenSellQty(openOrders, request.exchange), 0);
-  const fills = [...state.fills.bybit, ...state.fills.mexc];
+  const fills = state.fills[request.exchange].filter(f => f.symbol === request.symbol);
+  const sameDay = paper?.day === new Date(Date.now()).toISOString().slice(0, 10);
+  const openBuys = openOrders.filter(o => o.exchange === request.exchange && o.side === "buy" && !isTerminal(o.status));
+  const committedUsdt = openBuys.reduce((s,o) => s + Math.max(o.quantity-o.filledQuantity,0)*o.price,0);
+  const committedSells = committedOpenSellQty(openOrders, request.exchange);
 
   return {
     request,
@@ -28,25 +34,27 @@ export function buildRiskContext(
       totalZig: totalBase,
       activeInventory,
       reserveInventory,
-      reserveFloor: cfg.reserveFloor,
-      usdtBalance: quote?.available ?? quote?.total ?? 0,
-      averageCost: averageCost(fills, cfg.baseAsset, cfg.quoteAsset),
+      reserveFloor,
+      usdtBalance: Math.max((paper?.usdt ?? quote?.available ?? quote?.total ?? 0) - committedUsdt * (1 + (cfg.paperFeeBps ?? 0)/10000), 0),
+      dailySellBaseZig: paper?.startingActive,
+      dailyBuyBaseUsdt: paper?.startingUsdt,
+      averageCost: paper?.averageCost ?? averageCost(fills, cfg.baseAsset, cfg.quoteAsset),
     },
     reconciliationStatus: state.lastReconciliation[request.exchange]?.status ?? null,
     exchangeHealth: {
       websocketHealthy: market?.websocketStatus === "CONNECTED",
       sequenceHealthy: market?.sequenceStatus === "HEALTHY",
-      reconnectsLast5m: 0,
-      stale: market ? market.orderbookFreshnessMs > STALE_MARKET_MS : true,
+      reconnectsLast5m: (market?.reconnectTimestamps ?? []).filter(t => t >= Date.now() - 300_000).length,
+      stale: market ? !Number.isFinite(market.timestamp) || market.orderbookFreshnessMs + Math.max(0, Date.now() - market.timestamp) > STALE_MARKET_MS : true,
     },
     openOrdersCount: openOrders.filter((o) => o.exchange === request.exchange && !isTerminal(o.status)).length,
-    dailySellUsedZig: dailySellUsed(fills),
-    dailyBuyUsedUsdt: dailyBuyUsed(fills),
+    dailySellUsedZig: (paper ? sameDay ? paper.dailySellZig : 0 : dailySellUsed(fills)) + committedSells,
+    dailyBuyUsedUsdt: (paper ? sameDay ? paper.dailyBuyUsdt : 0 : dailyBuyUsed(fills)) + committedUsdt * (1 + (paper ? cfg.paperFeeBps ?? 0 : 0)/10000),
     liquidity: {
-      nearbyBidLiquidityZig: market?.bidLiquidity ?? 0,
-      nearbyAskLiquidityZig: market?.askLiquidity ?? 0,
-      nearbyBidLiquidityUsdt: (market?.bidLiquidity ?? 0) * (market?.bestBid ?? 0),
-      nearbyAskLiquidityUsdt: (market?.askLiquidity ?? 0) * (market?.bestAsk ?? 0),
+      nearbyBidLiquidityZig: market && market.bestBid && market.bestBid > 0 ? market.bidLiquidity / market.bestBid : 0,
+      nearbyAskLiquidityZig: market && market.bestAsk && market.bestAsk > 0 ? market.askLiquidity / market.bestAsk : 0,
+      nearbyBidLiquidityUsdt: market?.bidLiquidity ?? 0,
+      nearbyAskLiquidityUsdt: market?.askLiquidity ?? 0,
     },
   };
 }
@@ -72,11 +80,11 @@ function dailyBuyUsed(fills: ExchangeFill[]): number {
   const start = startOfUtcDay();
   return fills
     .filter((f) => f.side === "buy" && f.filledAt >= start)
-    .reduce((sum, f) => sum + f.size * f.price, 0);
+    .reduce((sum, f) => sum + f.size * f.price + (f.feeAsset === "USDT" ? f.fee : 0), 0);
 }
 
 function startOfUtcDay(): number {
-  const now = new Date();
+  const now = new Date(Date.now());
   return Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
 }
 

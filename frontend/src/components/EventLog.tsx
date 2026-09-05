@@ -7,15 +7,15 @@ interface Props {
 }
 
 const levelStyle: Record<DashboardEvent["level"], string> = {
-  info: "text-zinc-400",
-  warn: "text-yellow-400",
-  error: "text-red-400",
+  info: "text-secondary",
+  warn: "text-warn",
+  error: "text-neg",
 };
 
 const levelTag: Record<DashboardEvent["level"], string> = {
-  info: "text-zinc-600",
-  warn: "text-yellow-600",
-  error: "text-red-600",
+  info: "text-muted",
+  warn: "text-warn/70",
+  error: "text-neg/70",
 };
 
 function formatTime(iso: string): string {
@@ -28,21 +28,21 @@ function formatTime(iso: string): string {
 
 export function EventLog({ events }: Props) {
   return (
-    <div className="bg-card border border-border rounded-xl flex flex-col overflow-hidden">
-      <div className="px-4 py-3 border-b border-border flex items-center justify-between">
-        <span className="text-zinc-400 text-sm font-medium">Event Log</span>
-        <span className="text-zinc-600 text-xs font-mono">{events.length} events</span>
+    <div className="card flex flex-col overflow-hidden">
+      <div className="card-head">
+        <h2 className="card-title">Events</h2>
+        <span className="text-2xs text-muted">{events.length}</span>
       </div>
-      <div className="overflow-y-auto max-h-72 flex flex-col-reverse">
+      <div className="overflow-y-auto max-h-52 flex flex-col-reverse">
         {events.length === 0 ? (
-          <p className="text-zinc-600 text-xs font-mono p-4">Waiting for events...</p>
+          <p className="text-muted text-2xs p-3.5">Waiting for events…</p>
         ) : (
-          <div className="divide-y divide-border">
+          <div className="divide-y divide-line">
             {events.map((ev, i) => (
-              <div key={i} className="flex items-start gap-3 px-4 py-2 hover:bg-surface/50 transition-colors">
-                <span className="text-zinc-600 font-mono text-xs mt-0.5 shrink-0">{formatTime(ev.time)}</span>
-                <span className={`font-mono text-xs shrink-0 uppercase ${levelTag[ev.level]}`}>[{ev.level}]</span>
-                <span className={`font-mono text-xs ${levelStyle[ev.level]}`}>{ev.msg}</span>
+              <div key={i} className="flex items-start gap-2.5 px-3.5 py-1.5 hover:bg-raised transition-colors">
+                <span className="text-muted font-mono text-2xs mt-px shrink-0">{formatTime(ev.time)}</span>
+                <span className={`font-mono text-2xs shrink-0 uppercase ${levelTag[ev.level]}`}>[{ev.level}]</span>
+                <span className={`font-mono text-2xs leading-snug line-clamp-2 ${levelStyle[ev.level]}`} title={ev.msg}>{ev.msg}</span>
               </div>
             ))}
           </div>

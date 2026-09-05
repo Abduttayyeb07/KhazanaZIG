@@ -31,7 +31,7 @@ export interface AccTickContext {
 }
 
 export interface AccBuyInfo { cycleId: string; qty: number; price: number; usdtSpent: number; fee: number; recoveryTarget: number; budgetRemaining: number; }
-export interface AccRecoveryInfo { qty: number; price: number; fee: number; }
+export interface AccRecoveryInfo { qty: number; price: number; fee: number; reclaimedUsdt: number; budgetRemaining: number; }
 
 export interface AccReporter {
   decision(intent: { side: "buy" | "sell"; quantity: number; price: number }, d: RiskDecision): void;
@@ -49,6 +49,7 @@ export interface AccumulationParams {
   cooldownMs: number;
   bucketBps: number;
   minLiquidityUsdt: number;
+  liquidityMultiple: number; // an acc buy may take at most 1/N of visible ask depth
   maxSpreadBps: number;
   allowHighVol: boolean;
   allowChaotic: boolean;
@@ -85,7 +86,8 @@ export class AccumulationEngine {
       return false;
     }
     const c = eligible[0];
-    const qty = recoverySellQty(c.usdtSpent, this.p.principalRecoveryPct, c.usdtRecovered, ctx.bid);
+    const required = recoverySellQty(c.usdtSpent, this.p.principalRecoveryPct, c.usdtRecovered, ctx.bid * (1 - this.p.takerFeeBps / 10_000));
+    const qty = Math.min(c.boughtQty - c.recoveredSellQty, Math.max(required, this.p.minOrderZig));
     if (qty <= 0) return false;
     // Slippage leaves a tiny principal residue after the main recovery sell; sizing
     // REJECTS sub-min-order dust, and resubmitting it every tick (returning true)
@@ -95,7 +97,7 @@ export class AccumulationEngine {
       this.reporter.intentBlocked("ACCUMULATION_RECOVERY_DUST");
       return false;
     }
-    await this.submit("sell", qty, ctx.bid, "acc-recovery");
+    await this.submit("sell", qty, ctx.bid, "acc-recovery", [c.cycleId]);
     return true;
   }
 
@@ -111,10 +113,24 @@ export class AccumulationEngine {
     if (ctx.now < (this.bucketUntil.get(bucket) ?? 0)) { this.reporter.intentBlocked("ACCUMULATION_BUCKET_LOCK"); return false; }
     if (ctx.usdtBalance <= this.p.minUsdtFloor) { this.reporter.intentBlocked("USDT_RESERVE_FLOOR"); return false; }
 
-    const spend = Math.min(this.p.trancheUsdt, this.budget.maxSpend(ctx.usdtBalance, ctx.harvestRebuyReserve));
+    let spend = Math.min(this.p.trancheUsdt, this.budget.maxSpend(ctx.usdtBalance, ctx.harvestRebuyReserve));
+
+    // Size the tranche to the book instead of refusing to trade against it.
+    //
+    // The absolute floor above answers "is there a market at all". This answers the
+    // separate question of whether THIS order is small enough to rest in it: an
+    // accumulation buy may take at most 1/liquidityMultiple of visible ask depth.
+    // A fixed floor cannot express that — requiring $5,000 of depth to place a
+    // $1,000 tranche made accumulation unreachable on a book that is genuinely
+    // ~$950 deep, so the engine never bought once in 400 simulated runs.
+    if (this.p.liquidityMultiple > 0) {
+      const maxAgainstBook = ctx.liquidityUsdt / this.p.liquidityMultiple;
+      if (maxAgainstBook < spend) spend = maxAgainstBook;
+    }
+
     if (spend <= 0) { this.reporter.intentBlocked("ACCUMULATION_BUDGET_EXCEEDED"); return false; }
 
-    const qty = spend / ctx.ask;
+    const qty = spend / (ctx.ask * (1 + this.p.takerFeeBps / 10_000));
     const accepted = await this.submit("buy", qty, ctx.ask, "acc-buy");
     // Lock the zone for a cooldown so we don't re-submit before the fill resolves.
     this.cooldownUntil = ctx.now + this.p.cooldownMs;
@@ -124,27 +140,35 @@ export class AccumulationEngine {
   }
 
   // Route an accumulation paper fill (called from PaperSoak for acc-* orders only).
-  onPaperFill(side: "buy" | "sell", size: number, price: number, fillId: string, feeUsdt: number): void {
+  onPaperFill(side: "buy" | "sell", size: number, price: number, fillId: string, feeUsdt: number, cycleIds?: string[]): void {
     if (side === "buy") {
       const c = this.tracker.onBuy(fillId, size, price, feeUsdt);
-      this.budget.record(size * price);
+      this.budget.record(size * price + feeUsdt);
       this.reporter.accBuy({
-        cycleId: c.cycleId, qty: size, price, usdtSpent: size * price, fee: feeUsdt,
+        cycleId: c.cycleId, qty: size, price, usdtSpent: size * price + feeUsdt, fee: feeUsdt,
         recoveryTarget: c.targetRecoveryPrice, budgetRemaining: this.budget.snapshot().budgetRemaining,
       });
     } else {
-      this.tracker.onRecoverySell(fillId, size, price, feeUsdt);
-      this.reporter.accRecovery({ qty: size, price, fee: feeUsdt });
+      // Principal reclaimed goes straight back into the deployable budget — capital
+      // that has been recovered is not deployed, and must fund the next lot.
+      const reclaimed = this.tracker.onRecoverySell(fillId, size, price, feeUsdt, cycleIds);
+      this.budget.release(reclaimed);
+      this.reporter.accRecovery({ qty: size, price, fee: feeUsdt, reclaimedUsdt: reclaimed, budgetRemaining: this.budget.snapshot().budgetRemaining });
     }
+  }
+
+  heldZig(): number {
+    return this.tracker.all().reduce((sum, c) => sum + c.boughtQty - c.recoveredSellQty, 0);
   }
 
   metrics(): AccumulationMetrics {
     return this.tracker.metrics();
   }
 
-  private async submit(side: "buy" | "sell", quantity: number, price: number, reason: string): Promise<boolean> {
+  private async submit(side: "buy" | "sell", quantity: number, price: number, reason: string, cycleIds?: string[]): Promise<boolean> {
     const req: ExecutionRequest = {
       requestId: randomUUID(),
+      cycleIds,
       exchange: this.p.exchange,
       symbol: this.p.symbol,
       side,

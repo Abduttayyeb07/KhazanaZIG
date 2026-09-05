@@ -1,10 +1,12 @@
+import { pendingAllowed } from "./pending-policy.js";
 import type { Config } from "@zig/config";
 import type { Logger } from "@zig/logger";
 import type { Exchange, OrderEvent, ManagedOrder } from "@zig/shared-types";
 import type { StateEngine } from "../state-engine/index.js";
 import type { ExecutionPipeline } from "../execution-engine/pipeline.js";
 import type { OrderRegistry } from "../execution-engine/registry.js";
-import type { TelegramNotifier } from "../telegram/notifier.js";
+import type { Notifier } from "../notify/notifier.js";
+import type { DashboardSoak } from "../api/server.js";
 import { VirtualAccount } from "./virtual-account.js";
 import { HarvestDriver, type ZoneView } from "./harvest-driver.js";
 import { SoakReporter } from "./reporter.js";
@@ -21,7 +23,7 @@ const DEFAULT_ALLOW: ZoneView = {
   aggression: "FULL",
 };
 const CONSERVATIVE: ZoneView = {
-  allowed: { harvestSell: false, harvestRebuy: true, accumulationBuy: false, accumulationRecoverySell: false },
+  allowed: { harvestSell: false, harvestRebuy: false, accumulationBuy: false, accumulationRecoverySell: false },
   aggression: "REDUCED",
 };
 
@@ -61,7 +63,7 @@ export interface PaperSoakDeps {
   stateEngine: StateEngine;
   pipeline: ExecutionPipeline;
   registry: OrderRegistry;
-  tg: TelegramNotifier;
+  notifier: Notifier;
   markFn: () => number | null;
   log: Logger;
 }
@@ -72,12 +74,14 @@ export class PaperSoak {
   private readonly driver: HarvestDriver;
   private readonly zoneManager: ZoneManager | null;
   private readonly accEngine: AccumulationEngine | null;
+  private readonly accBudget: AccumulationBudget | null;
   private readonly d: PaperSoakDeps;
+  private active = false;
   readonly runId: string;
 
   constructor(deps: PaperSoakDeps) {
     this.d = deps;
-    const { cfg, settings, log, tg, markFn } = deps;
+    const { cfg, settings, log, notifier, markFn } = deps;
     this.runId = makeRunId();
 
     this.account = new VirtualAccount(
@@ -92,18 +96,25 @@ export class PaperSoak {
         takerFeeBps: cfg.PAPER_TAKER_FEE_BPS,
         runId: this.runId,
         rebuyDistanceBps: cfg.MIN_REBUY_DISTANCE_BPS,
+        rebuyDistance: {
+          minBps: cfg.MIN_REBUY_DISTANCE_BPS,
+          lowVolBps: cfg.REBUY_DISTANCE_LOW_VOL_BPS,
+          normalVolBps: cfg.REBUY_DISTANCE_NORMAL_VOL_BPS,
+          highVolBps: cfg.REBUY_DISTANCE_HIGH_VOL_BPS,
+          chaoticBps: cfg.REBUY_DISTANCE_CHAOTIC_BPS,
+        },
       },
       log
     );
 
     // Reporter: providers reference this.zoneManager/this.accEngine lazily (assigned below).
     this.reporter = new SoakReporter(
-      tg,
+      notifier,
       this.account,
       markFn,
       {
         runId: this.runId,
-        summaryMs: cfg.TG_FILL_SUMMARY_INTERVAL_SECONDS * 1_000,
+        summaryMs: cfg.SUMMARY_INTERVAL_SECONDS * 1_000,
         zoneLabel: () => this.zoneManager?.currentDecision()?.zone ?? null,
         accMetrics: () => this.accEngine?.metrics() ?? null,
       },
@@ -118,16 +129,44 @@ export class PaperSoak {
           () => this.zoneInputs(),
           cfg.ZONE_EVALUATION_INTERVAL_SECONDS * 1_000,
           (e) => this.onZoneChange(e),
-          log
+          log,
+          {
+            enabled: cfg.PAPER_HIGHER_BANDS_ENABLED && cfg.BAND_MIGRATION_ENABLED,
+            confirmationMs: Math.max(cfg.BAND_CONFIRMATION_SECONDS * 1_000, cfg.BAND_MIGRATION_DWELL_MINUTES * 60_000),
+            rungs: cfg.BAND_LADDER_RUNGS,
+            growth: cfg.BAND_LADDER_GROWTH,
+            // A higher band is funded by releasing reserve into the active pool,
+            // per the plan. Demotion re-protects it, so a spike cannot permanently
+            // strip the reserve.
+            onPromote: (level) => {
+              const released = this.account.releaseReserve(cfg.BAND_RESERVE_RELOAD_ZIG, deps.stateEngine);
+              this.d.notifier.notify(
+                `Band ${level} deployed — released ${fmt(released)} ZIG from reserve into the active pool`
+              );
+              return released;
+            },
+            onDemote: (level) => {
+              const reprotected = this.account.reprotectReserve(cfg.BAND_RESERVE_RELOAD_ZIG, deps.stateEngine);
+              this.d.notifier.notify(
+                `Band ${level} restored — re-protected ${fmt(reprotected)} ZIG back into reserve`
+              );
+              return reprotected;
+            },
+          }
         )
       : null;
 
     // Accumulation engine — separate cycle tracker + budget; submits via the same pipeline.
-    this.accEngine = cfg.ACCUMULATION_ENABLED
+    // The budget is held so /zone can report outstanding vs recycled capital.
+    this.accBudget = cfg.ACCUMULATION_ENABLED
+      ? new AccumulationBudget(settings.virtualUsdt, cfg.MAX_ACCUMULATION_BUDGET_USDT_PCT, cfg.MAX_DAILY_ACCUMULATION_USDT_PCT, cfg.MAX_TOTAL_USDT_DEPLOYED_PCT, cfg.MIN_USDT_RESERVE_FLOOR)
+      : null;
+
+    this.accEngine = this.accBudget
       ? new AccumulationEngine(
           deps.pipeline,
           new AccumulationCycleTracker(this.runId, settings.exchange, cfg.TRADING_SYMBOL, cfg.ACCUMULATION_RECOVERY_PROFIT_BPS, cfg.ACCUMULATION_PRINCIPAL_RECOVERY_PCT),
-          new AccumulationBudget(settings.virtualUsdt, cfg.MAX_ACCUMULATION_BUDGET_USDT_PCT, cfg.MAX_DAILY_ACCUMULATION_USDT_PCT, cfg.MAX_TOTAL_USDT_DEPLOYED_PCT, cfg.MIN_USDT_RESERVE_FLOOR),
+          this.accBudget,
           this.reporter,
           {
             exchange: settings.exchange,
@@ -138,6 +177,7 @@ export class PaperSoak {
             cooldownMs: cfg.ACCUMULATION_COOLDOWN_SECONDS * 1_000,
             bucketBps: cfg.ACCUMULATION_BUCKET_BPS,
             minLiquidityUsdt: cfg.ACCUMULATION_MIN_LIQUIDITY_USDT,
+            liquidityMultiple: cfg.ACCUMULATION_LIQUIDITY_MULTIPLE,
             maxSpreadBps: cfg.ACCUMULATION_MAX_SPREAD_BPS,
             allowHighVol: cfg.ACCUMULATION_ALLOW_IN_HIGH_VOL,
             allowChaotic: cfg.ACCUMULATION_ALLOW_IN_CHAOTIC,
@@ -150,6 +190,11 @@ export class PaperSoak {
         )
       : null;
 
+    deps.pipeline.setPaperPolicy(order => {
+      if (!this.active || order.exchange !== settings.exchange || order.symbol !== cfg.TRADING_SYMBOL) return false;
+      this.zoneManager?.evaluate();
+      return pendingAllowed(order, this.zoneView().allowed, this.account, this.accEngine, Math.max(60_000, settings.tickSeconds * 4_000));
+    });
     this.driver = new HarvestDriver(
       deps.stateEngine,
       deps.pipeline,
@@ -177,6 +222,7 @@ export class PaperSoak {
 
   // Zone view for the driver: real decision if available, else safe defaults.
   private zoneView(): ZoneView {
+    this.zoneManager?.evaluate();
     const d = this.zoneManager?.currentDecision();
     if (d) return { allowed: d.allowedActions, aggression: d.harvestAggression };
     // Manager enabled but not evaluated yet → conservative; manager disabled → legacy harvest.
@@ -189,21 +235,16 @@ export class PaperSoak {
     return {
       price: m.midPrice,
       regime: m.volatilityRegime,
-      exchangeHealthy: m.websocketStatus === "CONNECTED" && m.sequenceStatus === "HEALTHY" && m.orderbookFreshnessMs <= 5_000,
+      exchangeHealthy: m.websocketStatus === "CONNECTED" && m.sequenceStatus === "HEALTHY" && m.orderbookFreshnessMs + Math.max(0, Date.now() - m.timestamp) <= 5_000,
       reconciliationHealthy: true, // PAPER_MODE: reconciliation not required (matches RiskEngine)
     };
   }
 
+  // One line. The full permission matrix lives in the dashboard's zone panel; the
+  // event feed only needs to say that the regime changed and when.
   private onZoneChange(e: ZoneChangeEvent): void {
-    const a = e.current.allowedActions;
-    const yn = (b: boolean) => (b ? "✅" : "❌");
-    this.d.tg.notify(
-      `🧭 <b>ZONE CHANGE</b> — ${this.d.cfg.TRADING_SYMBOL}\n` +
-      `Previous: <code>${e.previous ?? "—"}</code>\n` +
-      `Current: <code>${e.current.zone}</code>\n` +
-      `Mark: <code>${e.current.price.toFixed(6)}</code>\n` +
-      `Allowed: ${yn(a.harvestSell)} sell · ${yn(a.harvestRebuy)} rebuy · ${yn(a.accumulationBuy)} acc-buy · ${yn(a.accumulationRecoverySell)} acc-recover\n` +
-      `${e.current.reasons.join("; ")}`
+    this.d.notifier.notify(
+      `Zone ${e.previous ?? "—"} → ${e.current.zone} at ${e.current.price.toFixed(6)}`
     );
   }
 
@@ -219,7 +260,9 @@ export class PaperSoak {
       }
     }
 
+    for (const order of this.d.registry.openOrders().filter(o => o.paper)) await this.d.pipeline.cancel(order.clientOrderId);
     this.account.seed(stateEngine, entryCost);
+    this.active = true;
     // Echo the live trading params the PROCESS actually received — config drift
     // between laptop/.env/server is then visible in the first Telegram message.
     this.reporter.startup({
@@ -229,7 +272,7 @@ export class PaperSoak {
       "Virtual USDT": settings.virtualUsdt,
       "Entry cost": entryCost,
       "Tick (s)": settings.tickSeconds,
-      "Rebuy distance (bps)": cfg.MIN_REBUY_DISTANCE_BPS,
+      "Rebuy distance (bps)": `min ${cfg.MIN_REBUY_DISTANCE_BPS} · low ${cfg.REBUY_DISTANCE_LOW_VOL_BPS} · normal ${cfg.REBUY_DISTANCE_NORMAL_VOL_BPS} · high ${cfg.REBUY_DISTANCE_HIGH_VOL_BPS} · chaotic ${cfg.REBUY_DISTANCE_CHAOTIC_BPS}`,
       "Buckets sell/buy (bps)": `${cfg.SELL_BUCKET_BPS}/${cfg.BUY_BUCKET_BPS}`,
       "Cooldowns sell/buy (s)": `${cfg.SELL_COOLDOWN_SECONDS}/${cfg.BUY_COOLDOWN_SECONDS}`,
       "Unrecovered cap (pct)": cfg.MAX_UNRECOVERED_ACTIVE_PCT,
@@ -243,6 +286,8 @@ export class PaperSoak {
   }
 
   stop(): void {
+    this.active = false;
+    for (const order of this.d.registry.openOrders().filter(o => o.paper)) void this.d.pipeline.cancel(order.clientOrderId);
     this.driver.stop();
     this.zoneManager?.stop();
     this.reporter.stop();
@@ -250,6 +295,99 @@ export class PaperSoak {
 
   statusText(): string {
     return this.reporter.statusText();
+  }
+
+  // Structured live state for the dashboard. Mirrors what /status and /zone report
+  // in Telegram, but as data rather than formatted text.
+  snapshot(): DashboardSoak {
+    const mark = this.d.markFn();
+    const t = this.account.derive(mark);
+    const cm = this.account.cycleMetrics(mark);
+    const acc = this.accEngine?.metrics() ?? null;
+    const budget = this.accBudget?.snapshot() ?? null;
+    const d = this.zoneManager?.currentDecision() ?? null;
+    const fills = this.reporter.cumulativeFills();
+
+    const nav = mark !== null ? t.totalBase * mark + this.account.usdtBalance : null;
+    const baseline = this.reporter.baseline;
+
+    return {
+      running: true,
+      runId: this.runId,
+      startedAt: this.reporter.startedAtMs || null,
+
+      zone: d?.zone ?? null,
+      zoneReason: d?.reasons.join("; ") ?? null,
+      harvestAggression: d?.harvestAggression ?? null,
+      breakoutCandidate: d?.bandBreakoutCandidate ?? false,
+      allowed: d?.allowedActions ?? null,
+
+      zig: t.totalBase,
+      usdt: this.account.usdtBalance,
+      activeZig: t.activeBase,
+      reserveZig: t.reserveBase,
+      avgCost: t.avgCost,
+      markPrice: mark,
+
+      nav,
+      baselineNav: baseline,
+      navDelta: nav !== null && baseline !== null ? nav - baseline : null,
+
+      harvest: {
+        openCycles: cm.openCount,
+        completedCycles: cm.completedCount,
+        completionRate: cm.completionRate,
+        harvestedUsdt: cm.harvestedUsdt,
+        unrecoveredZig: cm.unrecoveredZig,
+        nearestRebuyTarget: cm.nearestRebuyTarget,
+        sells: fills.sells,
+        buys: fills.buys,
+      },
+
+      accumulation: acc && budget
+        ? {
+            enabled: true,
+            openLots: acc.openCount,
+            recoveredLots: acc.principalRecoveredCount,
+            usdtDeployed: acc.usdtDeployed,
+            usdtRecovered: acc.usdtRecovered,
+            surplusZig: acc.surplusZig,
+            openExposureUsdt: acc.openExposureUsdt,
+            budgetRemaining: budget.budgetRemaining,
+            dailyRemaining: budget.dailyRemaining,
+            recycled: budget.recycled,
+          }
+        : null,
+
+      recentFills: this.account.recentFills(12).map((f) => ({
+        side: f.side, qty: f.size, price: f.price, at: f.filledAt, kind: "paper",
+      })),
+      blocked: this.reporter.blockedReasons().slice(0, 8),
+    };
+  }
+
+  // /zone — what the policy is allowing right now, and the budget behind it.
+  zoneText(): string {
+    const d = this.zoneManager?.currentDecision();
+    if (!this.zoneManager) return "🧭 Zone manager is disabled (ZONE_MANAGER_ENABLED=false) — legacy harvest policy in effect.";
+    if (!d) return "🧭 Zone not evaluated yet (waiting for market data). All new actions are held until it is.";
+
+    const yn = (b: boolean) => (b ? "✅" : "❌");
+    const a = d.allowedActions;
+    const acc = this.accEngine?.metrics() ?? null;
+    const budget = this.accBudget?.snapshot() ?? null;
+    return (
+      `🧭 <b>Zone:</b> <code>${d.zone}</code>${d.bandBreakoutCandidate ? " ⚠️ BREAKOUT CANDIDATE" : ""}\n` +
+      `Mark: <code>${d.price.toFixed(6)}</code> · Harvest aggression: <code>${d.harvestAggression}</code>\n` +
+      `Allowed: ${yn(a.harvestSell)} sell · ${yn(a.harvestRebuy)} rebuy · ${yn(a.accumulationBuy)} acc-buy · ${yn(a.accumulationRecoverySell)} acc-recover\n` +
+      `${d.reasons.join("; ")}\n` +
+      (budget
+        ? `\n💰 <b>Accumulation budget</b>\n` +
+          `Outstanding: <code>${budget.deployed.toFixed(2)}</code> · Available: <code>${budget.budgetRemaining.toFixed(2)}</code> USDT\n` +
+          `Today left: <code>${budget.dailyRemaining.toFixed(2)}</code> · Recycled: <code>${budget.recycled.toFixed(2)}</code> · Lifetime: <code>${budget.lifetimeDeployed.toFixed(2)}</code> USDT`
+        : "\n💰 Accumulation disabled (ACCUMULATION_ENABLED=false)") +
+      (acc ? `\nOpen lots: <code>${acc.openCount}</code> · Recovered: <code>${acc.principalRecoveredCount}</code> · Surplus ZIG: <code>${fmt(acc.surplusZig)}</code>` : "")
+    );
   }
 
   fillsText(limit = 10): string {
@@ -281,8 +419,16 @@ export class PaperSoak {
     const price = ev.fillPrice ?? order.price;
     if (size <= 0) return;
     const isAcc = (order.reason ?? "").startsWith("acc");
-    const { fillId, feeUsdt } = this.account.applyPaperFill(order.side, size, price, ev.at, this.d.stateEngine, isAcc ? "accumulation" : "harvest", order.price);
-    if (isAcc) this.accEngine?.onPaperFill(order.side, size, price, fillId, feeUsdt);
+    const regime = this.d.stateEngine.getState().market[this.d.settings.exchange]?.volatilityRegime ?? null;
+    const { fillId, feeUsdt } = this.account.applyPaperFill(
+      order.side, size, price, ev.at, this.d.stateEngine, isAcc ? "accumulation" : "harvest", order.price, regime, order.cycleIds, order.rebuyDistanceBps
+    );
+    if (isAcc) {
+      const before = this.accEngine?.metrics().surplusZig ?? 0;
+      this.accEngine?.onPaperFill(order.side, size, price, fillId, feeUsdt, order.cycleIds);
+      const added = (this.accEngine?.metrics().surplusZig ?? 0) - before;
+      if (added > 0) this.account.protectSurplus(added, this.d.stateEngine);
+    }
     else this.reporter.fill(order.side, size, price);
   }
 

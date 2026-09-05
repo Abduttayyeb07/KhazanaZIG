@@ -1,5 +1,5 @@
 import type { Logger } from "@zig/logger";
-import type { TelegramNotifier } from "../telegram/notifier.js";
+import type { Notifier } from "../notify/notifier.js";
 import type { RiskDecision } from "../decision-gate/risk-types.js";
 import type { VirtualAccount } from "./virtual-account.js";
 import type { AccBuyInfo, AccRecoveryInfo } from "../accumulation/accumulation-engine.js";
@@ -14,7 +14,7 @@ export interface ReporterProviders {
 
 // ── Soak reporter (v2 — throttled) ──────────────────────────────────────────────
 // v1 pushed every tiny fill → 1,856 messages. v2 AGGREGATES activity and flushes a
-// summary every TG_FILL_SUMMARY_INTERVAL_SECONDS. Critical events (HALT) still go
+// summary every SUMMARY_INTERVAL_SECONDS. Critical events (HALT) still go
 // out immediately. /status and /cycles give on-demand snapshots with cycle metrics.
 // ────────────────────────────────────────────────────────────────────────────────
 
@@ -34,14 +34,15 @@ interface Window {
   reboughtZig: number;
   blocked: Map<string, number>;
   rejectReasons: Map<string, number>; // WHY rejects happened — bare counts made Jun-11 undiagnosable
+  relaxations: Map<string, number>;   // gates only PAPER_MODE waived — NORMAL would have refused
 }
 
 function emptyWindow(): Window {
-  return { allowed: 0, reduced: 0, rejected: 0, filledSells: 0, filledBuys: 0, soldZig: 0, reboughtZig: 0, blocked: new Map(), rejectReasons: new Map() };
+  return { allowed: 0, reduced: 0, rejected: 0, filledSells: 0, filledBuys: 0, soldZig: 0, reboughtZig: 0, blocked: new Map(), rejectReasons: new Map(), relaxations: new Map() };
 }
 
 export class SoakReporter {
-  private readonly tg: TelegramNotifier;
+  private readonly notifier: Notifier;
   private readonly account: VirtualAccount;
   private readonly markFn: () => number | null;
   private readonly runId: string;
@@ -60,13 +61,13 @@ export class SoakReporter {
   private readonly accMetrics?: () => AccumulationMetrics | null;
 
   constructor(
-    tg: TelegramNotifier,
+    notifier: Notifier,
     account: VirtualAccount,
     markFn: () => number | null,
     opts: ReporterProviders,
     log: Logger
   ) {
-    this.tg = tg;
+    this.notifier = notifier;
     this.account = account;
     this.markFn = markFn;
     this.runId = opts.runId;
@@ -79,21 +80,17 @@ export class SoakReporter {
   // Immediate accumulation alerts (separate from harvest fills).
   accBuy(info: AccBuyInfo): void {
     this.cumAccBuys++;
-    this.tg.notify(
-      `🟢 <b>PAPER ACCUMULATION BUY</b> <code>${this.runId}</code>\n` +
-      `Bought: <code>${fmt(info.qty)} ZIG</code> @ <code>${info.price.toFixed(6)}</code>\n` +
-      `USDT spent: <code>${info.usdtSpent.toFixed(2)}</code> · Fee: <code>${info.fee.toFixed(2)}</code>\n` +
-      `Recovery target: <code>${info.recoveryTarget.toFixed(6)}</code>\n` +
-      `Budget remaining: <code>${info.budgetRemaining.toFixed(2)}</code> USDT · Cycle <code>${info.cycleId}</code>`
+    this.notifier.notify(
+      `Accumulation buy: ${fmt(info.qty)} ZIG @ ${info.price.toFixed(6)} ` +
+      `(${info.usdtSpent.toFixed(2)} USDT, recover at ${info.recoveryTarget.toFixed(6)})`
     );
   }
 
   accRecovery(info: AccRecoveryInfo): void {
     this.cumAccRecoveries++;
-    this.tg.notify(
-      `🟣 <b>PAPER ACCUMULATION RECOVERY</b> <code>${this.runId}</code>\n` +
-      `Recovery sell: <code>${fmt(info.qty)} ZIG</code> @ <code>${info.price.toFixed(6)}</code> · Fee: <code>${info.fee.toFixed(2)}</code>\n` +
-      `(principal reclaimed FIFO; surplus ZIG retained)`
+    this.notifier.notify(
+      `Accumulation recovery: ${fmt(info.qty)} ZIG @ ${info.price.toFixed(6)} ` +
+      `(reclaimed ${info.reclaimedUsdt.toFixed(2)} USDT)`
     );
   }
 
@@ -111,11 +108,9 @@ export class SoakReporter {
     this.startedAt = Date.now();
     this.captureBaselineNav();
     this.startSnapshot = this.snapshot();
-    this.tg.notify(
-      `🧪 <b>PAPER SOAK STARTED</b> <code>${this.runId}</code>\n` +
-      `Real market data · virtual money · real Phase 5 rules\n` +
-      Object.entries(detail).map(([k, v]) => `${k}: <code>${String(v)}</code>`).join("\n") +
-      `\n\n${this.startSnapshot}`
+    this.notifier.notify(
+      `Simulation started — ${detail["Virtual ZIG"] ?? "?"} ZIG / ${detail["Virtual USDT"] ?? "?"} USDT ` +
+      `on ${detail.Exchange ?? "?"}, ${detail["Tick (s)"] ?? "?"}s tick`
     );
   }
 
@@ -123,11 +118,20 @@ export class SoakReporter {
   // rolling window and the cumulative run record.
   decision(_intent: Intent, d: RiskDecision): void {
     if (d.decision === "HALT") {
-      this.tg.notify(`🛑 <b>RISK HALT</b>\nReasons: <code>${d.reasons.join(", ")}</code>\n\n${this.snapshot()}`);
+      this.notifier.notify(`RISK HALT — ${d.reasons.join(", ")}`);
       return;
     }
     const k = d.decision === "ALLOW" ? "allowed" : d.decision === "REDUCE" ? "reduced" : "rejected";
     this.w[k]++; this.cum[k]++;
+    // Count every gate PAPER_MODE waived, so "N allowed" is never mistaken for
+    // "N would have been allowed live".
+    const relaxed = d.metadata?.paperRelaxations;
+    if (Array.isArray(relaxed)) {
+      for (const r of relaxed as string[]) {
+        this.w.relaxations.set(r, (this.w.relaxations.get(r) ?? 0) + 1);
+        this.cum.relaxations.set(r, (this.cum.relaxations.get(r) ?? 0) + 1);
+      }
+    }
     if (k === "rejected") {
       for (const r of d.reasons) {
         this.w.rejectReasons.set(r, (this.w.rejectReasons.get(r) ?? 0) + 1);
@@ -147,11 +151,27 @@ export class SoakReporter {
   }
 
   halt(reason: string): void {
-    this.tg.notify(`🛑 <b>PAPER SOAK HALT</b>\n${reason}\n\n${this.snapshot()}`);
+    this.notifier.notify(`Simulation HALTED — ${reason}`);
   }
 
   statusText(): string {
     return this.snapshot();
+  }
+
+  // Machine-readable counterparts of the Telegram snapshot, for the dashboard.
+  get baseline(): number | null {
+    return this.baselineNavUsdt;
+  }
+  get startedAtMs(): number {
+    return this.startedAt;
+  }
+  cumulativeFills(): { sells: number; buys: number } {
+    return { sells: this.cum.filledSells, buys: this.cum.filledBuys };
+  }
+  blockedReasons(): Array<{ reason: string; count: number }> {
+    return [...this.cum.blocked.entries()]
+      .map(([reason, count]) => ({ reason, count }))
+      .sort((a, b) => b.count - a.count);
   }
 
   // Periodic activity summary; silent when nothing happened.
@@ -163,17 +183,14 @@ export class SoakReporter {
 
     const blocked = [...w.blocked.entries()].map(([r, n]) => `${r}×${n}`).join(", ") || "—";
     const rejects = [...w.rejectReasons.entries()].map(([r, n]) => `${r}×${n}`).join(", ");
+    const relaxed = [...w.relaxations.entries()].map(([r, n]) => `${r}×${n}`).join(", ");
     const mins = Math.round(this.summaryMs / 60_000);
-    this.tg.notify(
-      `📊 <b>PAPER SOAK SUMMARY — ${mins}m</b> <code>${this.runId}</code>\n` +
-      `Fills: ${w.filledSells} sell / ${w.filledBuys} buy\n` +
-      `Decisions: ${w.allowed} allowed · ${w.reduced} reduced · ${w.rejected} rejected\n` +
-      (rejects ? `Rejected for: ${rejects}\n` : "") +
-      `Blocked: ${blocked}\n` +
-      `Sold: <code>${fmt(w.soldZig)}</code> · Rebought: <code>${fmt(w.reboughtZig)}</code> ZIG\n\n` +
-      this.snapshot()
+    this.notifier.notify(
+      `${mins}m summary — ${w.filledSells} sells / ${w.filledBuys} rebuys, ` +
+      `${w.allowed} allowed · ${w.rejected} rejected` +
+      (blocked !== "—" ? ` · top block ${topOf(w.blocked)}` : "")
     );
-    this.log.info({ ...w, blocked: Object.fromEntries(w.blocked) }, "Soak summary");
+    this.log.info({ ...w, blocked: Object.fromEntries(w.blocked), relaxations: Object.fromEntries(w.relaxations) }, "Soak summary");
   }
 
   // Full run record on stop — comparable across soaks (Telegram + structured log).
@@ -183,23 +200,16 @@ export class SoakReporter {
     const mins = Math.round((Date.now() - this.startedAt) / 60_000);
     const blocked = [...c.blocked.entries()].map(([r, n]) => `${r}×${n}`).join(", ") || "—";
     const rejects = [...c.rejectReasons.entries()].map(([r, n]) => `${r}×${n}`).join(", ");
+    const relaxed = [...c.relaxations.entries()].map(([r, n]) => `${r}×${n}`).join(", ");
     const cm = this.account.cycleMetrics(this.markFn());
-    this.tg.notify(
-      `🏁 <b>PAPER SOAK RUN COMPLETE</b> <code>${this.runId}</code>\n` +
-      `Duration: ${mins}m\n` +
-      `Fills: ${c.filledSells} sell / ${c.filledBuys} buy\n` +
-      `Decisions: ${c.allowed} allowed · ${c.reduced} reduced · ${c.rejected} rejected\n` +
-      (rejects ? `Rejected for: ${rejects}\n` : "") +
-      `Blocked: ${blocked}\n` +
-      `Sold: <code>${fmt(c.soldZig)}</code> · Rebought: <code>${fmt(c.reboughtZig)}</code> ZIG\n` +
-      `Harvest cycles: <code>${cm.completedCount}</code> done / <code>${cm.openCount}</code> open (${(cm.completionRate * 100).toFixed(0)}%)\n` +
-      `Harvested: <code>${cm.harvestedUsdt.toFixed(2)}</code> USDT · Unrecovered: <code>${fmt(cm.unrecoveredZig)}</code> ZIG\n` +
-      `Accumulation: ${this.cumAccBuys} buys / ${this.cumAccRecoveries} recoveries\n\n` +
-      `<b>START</b>\n${this.startSnapshot}\n\n<b>END</b>\n${this.snapshot()}`
+    this.notifier.notify(
+      `Run complete (${mins}m) — ${c.filledSells} sells / ${c.filledBuys} rebuys, ` +
+      `${cm.completedCount} cycles closed, harvested ${cm.harvestedUsdt.toFixed(2)} USDT` +
+      (this.cumAccBuys > 0 ? `, ${this.cumAccBuys} accumulation buys` : "")
     );
     const acc = this.accMetrics?.() ?? null;
     this.log.warn(
-      { runId: this.runId, durationMin: mins, ...c, blocked: Object.fromEntries(c.blocked), cycles: cm, accBuys: this.cumAccBuys, accRecoveries: this.cumAccRecoveries, accumulation: acc },
+      { runId: this.runId, durationMin: mins, ...c, blocked: Object.fromEntries(c.blocked), relaxations: Object.fromEntries(c.relaxations), cycles: cm, accBuys: this.cumAccBuys, accRecoveries: this.cumAccRecoveries, accumulation: acc },
       "PAPER_SOAK_RUN_RECORD"
     );
   }
@@ -253,4 +263,12 @@ export class SoakReporter {
 
 function fmt(n: number): string {
   return n.toLocaleString("en-US", { maximumFractionDigits: 2 });
+}
+
+// Highest-count entry, for a one-line summary that still names the dominant cause.
+function topOf(m: Map<string, number>): string {
+  let best = "";
+  let n = -1;
+  for (const [k, v] of m) if (v > n) { best = k; n = v; }
+  return n > 0 ? `${best}×${n}` : "—";
 }

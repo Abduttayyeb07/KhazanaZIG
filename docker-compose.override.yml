@@ -3,11 +3,11 @@
 # backend (npm run dev) can reach them during development.
 # This file is NOT used in production deploys (use -f docker-compose.yml explicitly).
 
+# Port note: 5432 is reserved by Windows, and 15432 is taken by another project's
+# Postgres on this machine (edversity-pg). Colliding there is worse than it sounds —
+# the client connects successfully to the WRONG database and reports a missing
+# schema rather than a port conflict. 15442 is ours.
 services:
   postgres:
     ports:
-      - "127.0.0.1:15432:5432"
-
-  redis:
-    ports:
-      - "127.0.0.1:6379:6379"
+      - "127.0.0.1:15442:5432"

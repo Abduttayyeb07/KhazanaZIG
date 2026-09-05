@@ -58,4 +58,26 @@ assert.equal(parseConfig(validEnv).MAX_ORDER_ACTIVE_PCT, 0.05);
   assert.throws(() => parseConfig(env), /volatility ATR thresholds/);
 }
 
+// Zone bounds must stay ordered, non-overlapping, and inside the active harvest band.
+{
+  const env = { ...validEnv, ZONE_A_HIGH: "0.055", ZONE_B_LOW: "0.050" };
+  assert.throws(() => parseConfig(env), /zones must not overlap/);
+}
+
+{
+  const env = { ...validEnv, ZONE_B_LOW: "0.045", ACTIVE_BAND_LOW: "0.050" };
+  assert.throws(() => parseConfig(env), /harvest band must contain Zone B/);
+}
+
+{
+  const env = { ...validEnv, ZONE_C_HIGH: "0.090", ACTIVE_BAND_HIGH: "0.075" };
+  assert.throws(() => parseConfig(env), /harvest band must contain Zone C/);
+}
+
+{
+  // The shipped defaults must satisfy their own containment rule.
+  const c = parseConfig(validEnv);
+  assert.ok(c.ACTIVE_BAND_LOW <= c.ZONE_B_LOW && c.ZONE_C_HIGH <= c.ACTIVE_BAND_HIGH);
+}
+
 console.log("config env tests passed");

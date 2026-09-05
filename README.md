@@ -81,11 +81,31 @@ ZIG Treasury/
 │       │   ├── mexc/{rest,websocket,normalizer,protobuf}.ts
 │       │   └── http-error.ts           # Sanitizes axios errors (strips key-bearing headers)
 │       ├── orderbook/engine.ts         # Snapshot/delta book, spread/imbalance
-│       ├── decision-gate/              # Authority gate
-│       │   ├── risk-engine.ts          # Structural risk checks (full rules = Phase 5)
-│       │   ├── allow-trade.ts          # mode + risk → trade permission
-│       │   ├── treasury-gate.ts        # Reserve-floor / active-inventory enforcement
+│       ├── decision-gate/              # Authority gate — sovereign
+│       │   ├── risk-engine.ts          # Hard gates + policies (reserve floor, profit floor, drift)
+│       │   ├── risk-context.ts         # Builds the decision context from SystemState
+│       │   ├── risk-config.ts          # Config → RiskConfig
+│       │   ├── regime/volatility-classifier.ts  # LOW/NORMAL/HIGH/CHAOTIC
+│       │   ├── sizing/sizing-engine.ts # Caps: order %, liquidity, daily, mode, volatility
+│       │   ├── errors/                 # AppError / RiskError / handler
 │       │   └── mode-controller.ts      # Mode transitions → state engine
+│       ├── zone-manager/               # Operator-defined market zones (strategy anchor)
+│       │   ├── zone-classifier.ts      # Pure: price + regime + health → MarketZone
+│       │   ├── zone-policy.ts          # Pure: zone → allowed actions + aggression
+│       │   ├── zone-manager.ts         # Re-classifies on an interval, emits zone changes
+│       │   └── zone-{types,config,events}.ts
+│       ├── accumulation/               # Buy weakness → recover principal → keep surplus ZIG
+│       │   ├── accumulation-engine.ts  # Buy + recovery-sell intents (via the same pipeline)
+│       │   ├── accumulation-cycle-tracker.ts # Buy-first lots, FIFO principal reclaim
+│       │   ├── accumulation-budget.ts  # Budget %, daily %, dry-powder floor, recycling
+│       │   └── accumulation-{recovery,types}.ts
+│       ├── paper-soak/                 # Live-market forward test (virtual money, real rules)
+│       │   ├── harvest-driver.ts       # Zone-aware intent generator (close before open)
+│       │   ├── cycle-tracker.ts        # Harvest round-trips — the "did it harvest?" metric
+│       │   ├── virtual-account.ts      # Virtual balances + paper-only fill ledger
+│       │   ├── reporter.ts             # Throttled Telegram summaries, NAV, relaxations
+│       │   ├── controller.ts           # Telegram command surface
+│       │   └── index.ts                # PaperSoak orchestrator
 │       ├── execution-engine/           # Phase 4 — live (PAPER verified)
 │       │   ├── pipeline.ts             # The one path: gates → adapter → registry
 │       │   ├── lifecycle.ts            # Order state machine (validated transitions)
@@ -109,8 +129,11 @@ ZIG Treasury/
 │       │   ├── exchange-client-factory.ts
 │       │   ├── credential-vault.ts
 │       │   └── trading-session.ts
+│       ├── auth/                       # Dashboard sign-in (users, passwords, sessions)
 │       ├── database/client.ts          # Prisma client + connect/disconnect
-│       └── telegram/notifier.ts        # Telegram alerts
+│       └── telegram/
+│           ├── notifier.ts             # Telegram alerts / audit feed
+│           └── command-listener.ts     # Allow-listed command polling
 ├── frontend/                 # @zig/dashboard — Next.js live dashboard
 │   └── src/
 │       ├── app/{layout,page}.tsx
@@ -182,6 +205,51 @@ Controlled, deterministic execution. One pipeline; operator clicks and the paper
 - **Real adapters** (`real-adapter.ts`) — Bybit/MEXC place + cancel, **gated to NORMAL/DEFENSIVE**. Real fills detected by an 8s execution-sync loop (polling exchange truth).
 - **Chaos harness** (`npm run chaos`) — 5 failure modes (duplicate fills, partial-fill-during-reconnect, cancel race, restart recovery, delayed WS), 14 assertions, all passing. Caught & fixed two real bugs (fill double-count, premature cancellation).
 
+### ✅ Phase 5 — Risk engine + sizing (complete)
+
+The gate is no longer structural-only. `evaluate()` runs hard gates → policies → regime → sizing:
+- **Hard gates**: mode, market state present, websocket/sequence health, staleness, excessive
+  reconnects (→ HALT), `CRITICAL_DRIFT` (→ HALT), reconciliation must be `MATCH`.
+- **Policies**: max open orders, spread ceiling, active inventory > 0, reserve floor leaves a
+  safe size, minimum sell profit vs cost basis, funded buys.
+- **Sizing** (`sizing-engine.ts`) takes the *minimum* of every cap and reports which one bound:
+  order %, reserve floor, book liquidity participation, daily sell/buy limits, mode multiplier,
+  volatility multiplier. Below `MIN_ORDER_ZIG` → REJECT; above → REDUCE with reasons.
+- **Volatility regime** (`LOW/NORMAL/HIGH/CHAOTIC`) drives both sizing and the zone classifier —
+  one source of truth for "the market is chaotic".
+
+> **PAPER_MODE is deliberately more permissive than NORMAL** (reconciliation is inapplicable,
+> sells are zone-anchored rather than cost-anchored). Every waived gate is recorded on the
+> decision as `metadata.paperRelaxations` and reported in the soak summary, so a paper
+> "allowed" count is never mistaken for a live one.
+
+### ✅ Adaptive zones + controlled accumulation (complete — paper)
+
+Strategy anchors on **operator-defined price zones**, not on unknown historical average cost.
+
+- **Zones**: `BELOW_ACTIVE_BAND · A (0.045–0.05) · B (0.05–0.06) · C (0.06–0.075) · ABOVE · CHAOTIC`,
+  half-open so shared edges resolve upward. Chaos wins first.
+- **Policy per zone**: A = accumulate, never sell · B = full harvest · C = harvest at REDUCED
+  aggression · ABOVE = harvest + breakout candidate, no accumulation · BELOW = finish open
+  obligations only · CHAOTIC = everything off.
+- **Harvest**: each sell opens a cycle with a rebuy target `MIN_REBUY_DISTANCE_BPS` below it;
+  buys FIFO-close the oldest. Tick order is **close before open** — a dip is rebuy-eligible *and*
+  a fresh sell bucket, and selling first starved rebuys entirely.
+- **Accumulation** (separate tracker, buy-first): buy a tranche in weakness, sell back only
+  enough to reclaim principal at `+RECOVERY_PROFIT_BPS`, **keep the surplus ZIG**. Recovered
+  principal returns to the budget, so capital recycles instead of being a one-shot allowance.
+- **Protected on both sides**: `RESERVE_FLOOR` (never sold into) and `MIN_USDT_RESERVE_FLOOR`
+  (dry powder), plus harvest rebuys hold priority over accumulation for available USDT.
+- **Honest accounting**: no accumulation profit is claimed until principal is recovered —
+  until then it is reported as open exposure.
+
+### ✅ Paper soak (live-market forward test)
+
+`PAPER_SOAK_ENABLED=true`, or `/soak_start` from Telegram. Real market data, virtual money,
+the real risk engine. Driven from Telegram: `/status`, `/zone`, `/fills`, `/soak_config`,
+`/soak_set key=value`, `/soak_stop`. Reports NAV vs baseline, harvest cycle completion,
+accumulation surplus, and the reasons behind every block and rejection.
+
 ### ✅ Live dashboard
 
 Real-time view at `http://localhost:3000` over a WebSocket to the engine (port 3001):
@@ -213,7 +281,10 @@ Mode is checked before the risk engine on every execution decision. `CRITICAL_DR
 | Method | Route | Auth | Purpose |
 |---|---|---|---|
 | `GET` | `/health` | none | Liveness |
-| `GET` | `/api/public/session-status` | none | Which exchanges are keyed (no secrets) |
+| `POST` | `/api/auth/login` | none | Dashboard sign-in (issues a session cookie) |
+| `POST` | `/api/auth/logout` | session | Clear the dashboard session |
+| `GET` | `/api/auth/me` | session | Current dashboard user |
+| `GET` | `/api/public/session-status` | session | Which exchanges are keyed (no secrets) |
 | `POST` | `/api/operator/credentials` | operator token | Submit + encrypt exchange keys |
 | `DELETE` | `/api/operator/credentials` | operator token | Remove stored keys (clears account state) |
 | `POST` | `/api/operator/order` | operator token | Place a limit order (paper in PAPER_MODE, real in NORMAL) |
@@ -234,11 +305,11 @@ pnpm --filter @zig/logger build
 pnpm --filter @zig/config build
 
 # 3. Start Postgres + Redis (dev override binds to 127.0.0.1 only)
-docker compose up -d postgres redis
+docker compose up -d postgres
 
 # 4. Push the DB schema (first time / after schema changes)
 cd backend
-DATABASE_URL="postgresql://postgres:postgres@localhost:15432/zig_treasury" node node_modules/prisma/build/index.js db push
+DATABASE_URL="postgresql://postgres:postgres@localhost:15442/zig_treasury" node node_modules/prisma/build/index.js db push
 cd ..
 
 # 5. Configure environment
@@ -251,12 +322,18 @@ cd frontend && npm run dev   # dashboard on :3000
 
 Open **http://localhost:3000**.
 
-> **Note:** Windows reserves port 5432, so dev Postgres runs on host port **15432** (container still 5432). Reflected in `.env` and `docker-compose.override.yml`.
+> **Note:** Windows reserves port 5432, so dev Postgres runs on host port **15442** (container still 5432). Reflected in `.env` and `docker-compose.override.yml`.
 > If you hit `EADDRINUSE` on 3001, a zombie `node` process is holding it: `Get-Process node | Stop-Process -Force`.
 
 ### Verifying execution
 ```powershell
-cd backend && npm run chaos   # 5 failure-mode scenarios, 14 assertions
+cd backend
+npm run typecheck    # tsc --noEmit
+npm run chaos        # 5 failure-mode scenarios, 14 assertions
+npm run test:risk    # risk engine gates, sizing, paper relaxations
+npm run test:zone    # zone classification + policy, 14 assertions
+npm run test:acc     # accumulation cycles, budget, recycling, 33 assertions
+npm run test:soak    # harvest driver discipline + cycle tracking, 41 assertions
 ```
 To exercise the pipeline live without risk: set `OPERATIONAL_MODE=PAPER_MODE`, then use the dashboard **Execution** panel (enter the operator token, place a limit order) — fills are simulated, nothing touches a real exchange.
 
@@ -271,7 +348,7 @@ To exercise the pipeline live without risk: set `OPERATIONAL_MODE=PAPER_MODE`, t
 
 | Var | Purpose | Notes |
 |---|---|---|
-| `DATABASE_URL` | Postgres connection | dev: `...@localhost:15432/zig_treasury` |
+| `DATABASE_URL` | Postgres connection | dev: `...@localhost:15442/zig_treasury` |
 | `REDIS_URL` | Redis connection | |
 | `ENCRYPTION_KEY` | 64 hex chars — credential vault master key | empty = ephemeral (dev only, won't survive restart) |
 | `OPERATOR_TOKEN` | Control-plane token | empty = control routes disabled (fail-closed) |
@@ -282,6 +359,11 @@ To exercise the pipeline live without risk: set `OPERATIONAL_MODE=PAPER_MODE`, t
 | `TRADING_SYMBOL` | Pair | `ZIGUSDT` |
 | `BASE_ASSET` / `QUOTE_ASSET` | Treasury assets | `ZIG` / `USDT` |
 | `RESERVE_FLOOR` | Protected reserve (base asset) | `0` = entire balance harvestable. **Set non-zero before NORMAL.** |
+
+The zone, accumulation and paper-soak variables (`ZONE_*`, `ACCUMULATION_*`, `SOAK_*`,
+`MIN_USDT_RESERVE_FLOOR`, `MAX_TOTAL_USDT_DEPLOYED_PCT`) all have working defaults matching the
+operating plan — see [.env.example](.env.example) for the annotated block. Config validation
+fails startup on invalid zone ordering or zones outside the active harvest band.
 
 **Exchange API keys are NOT environment variables** — they are submitted at runtime via the dashboard and stored encrypted.
 
@@ -312,10 +394,22 @@ To exercise the pipeline live without risk: set `OPERATIONAL_MODE=PAPER_MODE`, t
 | 2 | Session security + reconciliation + state recovery | ✅ Complete |
 | 3 | Treasury accounting (active vs reserve, cost basis, harvest) | ✅ Complete |
 | 4 | Execution engine (limit orders, lifecycle, recovery, chaos-tested) | ✅ Complete — PAPER verified; real placement operator-gated |
-| 5 | Risk engine (full adaptive rules: exposure, volatility, liquidity) | ⬜ Next — structural gate only today |
-| 6 | Telegram operations (commands: /status, /halt, /pause) | 🔄 Alerts done; commands later |
+| 5 | Risk engine (adaptive rules: exposure, volatility, liquidity) | ✅ Complete |
+| 6 | Telegram operations (soak control + audit feed) | ✅ Complete |
+| — | Adaptive zones + controlled accumulation | ✅ Complete — paper |
 | 7 | AI layer (Bedrock — advisory, outside the authority chain) | ⬜ |
-| — | Market replay tooling | ⬜ Deferred |
+| — | Market replay / simulation tooling | ⬜ Next |
+
+### Known gaps (deliberate, not oversights)
+
+| Gap | Status |
+|---|---|
+| Rebuy distance is fixed (`MIN_REBUY_DISTANCE_BPS`), not scaled by volatility | ⬜ Planned |
+| Order-book `imbalanceRatio` is computed and displayed but drives no decision | ⬜ Planned |
+| Momentum exhaustion / mean-reversion signals | ⬜ Not built |
+| Self-trade prevention (one-order-in-flight makes it moot in the soak) | ⬜ Not built |
+| Upward band migration (Band 2 `$0.075–0.10` from reserve) — only a `BAND_BREAKOUT_CANDIDATE` flag | ⬜ Out of scope |
+| Zone + accumulation live only inside `paper-soak/`; NORMAL has no strategy driver | ⬜ Intentional — paper only |
 
 > **Note:** phase numbering was compressed during the build (orderbook folded into Phase 1; session+reconciliation merged into Phase 2). Execution is "Phase 4" in current usage.
 

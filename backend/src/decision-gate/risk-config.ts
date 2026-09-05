@@ -3,6 +3,8 @@ import type { RiskConfig } from "./risk-types.js";
 
 export function buildRiskConfig(cfg: Config): RiskConfig {
   return {
+    paperFeeBps: cfg.PAPER_TAKER_FEE_BPS,
+    paperSlippageBps: cfg.PAPER_SLIPPAGE_BPS,
     maxOrderActivePct: cfg.MAX_ORDER_ACTIVE_PCT,
     maxDailySellActivePct: cfg.MAX_DAILY_SELL_ACTIVE_PCT,
     maxDailyBuyUsdtPct: cfg.MAX_DAILY_BUY_USDT_PCT,

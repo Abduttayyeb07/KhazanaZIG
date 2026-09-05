@@ -57,11 +57,50 @@ console.log("\n2. Accumulation budget + dry powder");
   ok("harvest reserve reduces spend (1000)", Math.abs(b2.maxSpend(10000, 4000) - 1000) < 1e-6, b2.maxSpend(10000, 4000));
 }
 
+// Recovered principal must return to the deployable pool, or the budget is a
+// one-shot allowance and accumulation stops for the life of the run.
+{
+  // budget 30%=4500 · daily 100% (not the binding cap here) · total 50%=7500 · floor 0
+  const b = new AccumulationBudget(15000, 0.3, 1.0, 0.5, 0);
+  b.record(4500);
+  ok("budget exhausted after full deploy", b.maxSpend(15000, 0) === 0, b.maxSpend(15000, 0));
+  b.release(4500);
+  ok("recovery refills the budget", Math.abs(b.maxSpend(15000, 0) - 4500) < 1e-6, b.maxSpend(15000, 0));
+
+  const s = b.snapshot();
+  ok("outstanding deployed back to 0", Math.abs(s.deployed) < 1e-6, s.deployed);
+  ok("lifetime deployed still 4500", Math.abs(s.lifetimeDeployed - 4500) < 1e-6, s.lifetimeDeployed);
+  ok("recycled tracked (4500)", Math.abs(s.recycled - 4500) < 1e-6, s.recycled);
+
+  b.release(9999); // over-release (slippage/fee rounding) must not inflate the budget
+  ok("over-release clamped at cap", Math.abs(b.maxSpend(15000, 0) - 4500) < 1e-6, b.maxSpend(15000, 0));
+}
+
+// The DAILY cap is a velocity limit — recycling capital must not reopen it.
+{
+  const b = new AccumulationBudget(15000, 0.3, 0.1, 0.5, 0); // daily 1500
+  b.record(1500);
+  b.release(1500);
+  ok("daily cap survives a release", b.maxSpend(15000, 0) === 0, b.maxSpend(15000, 0));
+}
+
+// End-to-end: buy → full recovery → budget is redeployable via the engine path.
+{
+  const t = new AccumulationCycleTracker("rc", "bybit", "ZIGUSDT", 500, 1.0);
+  const b = new AccumulationBudget(15000, 0.3, 1.0, 0.5, 0);
+  const c = t.onBuy("b1", 20408, 0.049, 1.0);
+  b.record(c.usdtSpent);
+  const reclaimed = t.onRecoverySell("s1", recoverySellQty(c.usdtSpent, 1.0, 0, 0.057), 0.057, 1.0);
+  ok("onRecoverySell returns principal reclaimed", Math.abs(reclaimed - c.usdtSpent) < 1e-6, reclaimed);
+  b.release(reclaimed);
+  ok("budget outstanding ≈ 0 after recovery", Math.abs(b.snapshot().deployed) < 1e-6, b.snapshot().deployed);
+}
+
 // ── 3. Accumulation engine gates ────────────────────────────────────────────────
 console.log("\n3. Accumulation engine gates (all intents via pipeline)");
 const params: AccumulationParams = {
   exchange: "bybit", symbol: "ZIGUSDT", enabled: true, recoveryEnabled: true, trancheUsdt: 1000,
-  cooldownMs: 0, bucketBps: 100, minLiquidityUsdt: 5000, maxSpreadBps: 150, allowHighVol: false,
+  cooldownMs: 0, bucketBps: 100, minLiquidityUsdt: 300, liquidityMultiple: 3, maxSpreadBps: 150, allowHighVol: false,
   allowChaotic: false, minUsdtFloor: 5000, principalRecoveryPct: 1.0, takerFeeBps: 10, minOrderZig: 300,
 };
 const allowAcc: AllowedActions = { harvestSell: false, harvestRebuy: false, accumulationBuy: true, accumulationRecoverySell: true };
@@ -94,9 +133,21 @@ void (async () => {
   await h.eng.attemptBuy(ctx({ spreadBps: 200 }));
   ok("spread too wide → blocked", h.submits.length === 0 && h.blocked.includes("ACCUMULATION_SPREAD_TOO_WIDE"));
 
+  // The liquidity gate must SIZE to the book, not refuse it. A thin-but-real book
+  // is the normal state for ZIG (~944 USDT of visible ask depth); an absolute floor
+  // above that made accumulation unreachable in every one of 400 simulated runs.
   h = engine();
-  await h.eng.attemptBuy(ctx({ liquidityUsdt: 1000 }));
-  ok("liquidity low → blocked", h.submits.length === 0 && h.blocked.includes("ACCUMULATION_LIQUIDITY_LOW"));
+  const thin = await h.eng.attemptBuy(ctx({ liquidityUsdt: 900 }));
+  ok("thin book → buy sized down, not refused", thin && h.submits.length === 1, JSON.stringify(h.submits));
+  ok("tranche capped at 1/3 of ask depth (300 USDT notional)",
+    h.submits.length === 1 && Math.abs(h.submits[0].qty * h.submits[0].price - 300) < 5,
+    h.submits.length ? (h.submits[0].qty * h.submits[0].price).toFixed(2) : "none");
+
+  // Below the absolute floor there is effectively no market, so the buy is refused
+  // outright rather than sized down to dust.
+  h = engine();
+  await h.eng.attemptBuy(ctx({ liquidityUsdt: 100 }));
+  ok("no real market → blocked", h.submits.length === 0 && h.blocked.includes("ACCUMULATION_LIQUIDITY_LOW"), h.blocked.join(","));
 
   h = engine();
   await h.eng.attemptBuy(ctx({ usdtBalance: 5000 }));

@@ -32,8 +32,8 @@ export class AccumulationCycleTracker {
       recoveredSellQty: 0,
       surplusZigQty: qty,
       avgBuyPrice: price,
-      targetRecoveryPrice: recoveryTargetPrice(price, this.recoveryProfitBps),
-      usdtSpent: qty * price,
+      targetRecoveryPrice: recoveryTargetPrice(price + feeUsdt / qty, this.recoveryProfitBps),
+      usdtSpent: qty * price + feeUsdt,
       usdtRecovered: 0,
       feesUsdt: feeUsdt,
       openedAt: now,
@@ -43,48 +43,41 @@ export class AccumulationCycleTracker {
     return c;
   }
 
-  // A RECOVERY SELL reclaims principal FIFO across open cycles still owing principal.
-  //
-  // We do NOT re-gate by price here (mirror of the harvest onBuy fix). The engine
-  // already decided to recover (it gates on openForRecovery(bid)); sell-side slippage
-  // can land the fill just BELOW target on a shallow touch, and re-filtering on the
-  // fill price would strand the cycle (ZIG sold, principal reclaimed = 0). FIFO over
-  // open cycles owing principal pays down the oldest first.
-  onRecoverySell(fillId: string, qty: number, price: number, feeUsdt: number): void {
+  // Attribute fills to the lots selected when submitting, including fees and dust.
+  onRecoverySell(fillId: string, qty: number, price: number, feeUsdt: number, cycleIds?: string[]): number {
     let remainingQty = qty;
+    let reclaimedUsdt = 0;
     const feePerQty = qty > 0 ? feeUsdt / qty : 0;
-    const eligible = this.cycles
-      .filter(
-        (c) =>
-          (c.status === "OPEN" || c.status === "PARTIALLY_RECOVERED") &&
-          c.usdtRecovered < c.usdtSpent * this.principalRecoveryPct - EPS
-      )
-      .sort((a, b) => a.openedAt - b.openedAt);
+    const netPrice = price - feePerQty;
+    const eligible = this.cycles.filter(c =>
+      (!cycleIds || cycleIds.includes(c.cycleId)) &&
+      (c.status === "OPEN" || c.status === "PARTIALLY_RECOVERED")
+    ).sort((a, b) => a.openedAt - b.openedAt);
     for (const c of eligible) {
       if (remainingQty <= EPS) break;
-      const principalNeed = Math.max(c.usdtSpent * this.principalRecoveryPct - c.usdtRecovered, 0);
-      const qtyForPrincipal = principalNeed / price;
-      const sellable = Math.min(c.boughtQty - c.recoveredSellQty, qtyForPrincipal); // never sell more than held / needed
-      const alloc = Math.min(remainingQty, sellable);
+      const need = Math.max(c.usdtSpent * this.principalRecoveryPct - c.usdtRecovered, 0);
+      // Targeted orders may round up to the minimum order; account for every sold unit.
+      const alloc = Math.min(remainingQty, c.boughtQty - c.recoveredSellQty,
+        cycleIds ? Infinity : need / netPrice);
       if (alloc <= EPS) continue;
-
-      const prevSold = c.recoveredSellQty;
+      const previous = c.recoveredSellQty;
       c.recoveredSellQty += alloc;
-      c.usdtRecovered += alloc * price;
+      const net = alloc * netPrice;
+      c.usdtRecovered += net;
+      reclaimedUsdt += Math.min(need, net);
       c.surplusZigQty = Math.max(c.boughtQty - c.recoveredSellQty, 0);
-      c.avgRecoverySellPrice = ((c.avgRecoverySellPrice ?? 0) * prevSold + price * alloc) / c.recoveredSellQty;
+      c.avgRecoverySellPrice = ((c.avgRecoverySellPrice ?? 0) * previous + price * alloc) / c.recoveredSellQty;
       c.feesUsdt += feePerQty * alloc;
       if (!c.recoverySellFillIds.includes(fillId)) c.recoverySellFillIds.push(fillId);
       c.updatedAt = Date.now();
-
       if (c.usdtRecovered >= c.usdtSpent * this.principalRecoveryPct - EPS) {
         c.status = "PRINCIPAL_RECOVERED";
         c.completedAt = Date.now();
-      } else {
-        c.status = "PARTIALLY_RECOVERED";
-      }
+      } else c.status = "PARTIALLY_RECOVERED";
       remainingQty -= alloc;
     }
+    if (cycleIds && remainingQty > 1e-6) throw new Error("UNALLOCATED_ACCUMULATION_SELL");
+    return reclaimedUsdt;
   }
 
   // Open/partial cycles whose recovery target the bid has reached, still owing principal.

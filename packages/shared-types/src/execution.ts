@@ -22,6 +22,8 @@ export interface ExecutionRequest {
   price: number;
   tif: TimeInForce;
   source: ExecutionSource;
+  cycleIds?: string[]; // Explicit allocation for paper rebuy/recovery fills.
+  rebuyDistanceBps?: number;
   reason: string; // human-readable journal note: why this order exists
   createdAt: number;
 }
@@ -54,8 +56,11 @@ export interface ManagedOrder {
   price: number;
   quantity: number;
   filledQuantity: number;
+  requestedQuantity?: number; // Before risk sizing, used to revalidate resting paper orders.
   status: ManagedOrderStatus;
   source: ExecutionSource;
+  cycleIds?: string[]; // Explicit allocation for paper rebuy/recovery fills.
+  rebuyDistanceBps?: number;
   reason: string;
   exchangeOrderId: string | null;
   // true if executed via the paper engine (simulation). Paper orders are NEVER

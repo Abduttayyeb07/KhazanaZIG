@@ -2,9 +2,13 @@ node_modules/
 dist/
 .env
 .env.local
+.env.bak*
 *.log
 .turbo/
+.next/
+.next-dev/
 .DS_Store
+backend/data/
 prisma/migrations/
 graphify-out
 docs

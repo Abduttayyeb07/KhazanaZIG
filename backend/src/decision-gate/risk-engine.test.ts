@@ -165,4 +165,52 @@ function orders(n: number): ManagedOrder[] {
   assert.ok(decision.reasons.includes("MAX_OPEN_ORDERS_PER_EXCHANGE"));
 }
 
+// ── PAPER_MODE relaxations must be recorded, never silent ───────────────────────
+// A paper run is more permissive than NORMAL; every waived gate is reported so the
+// soak's "allowed" count can't be read as "would have been allowed live".
+{
+  // Sell below cost: NORMAL refuses on the profit floor, PAPER allows and records it.
+  const belowCost = req({ side: "sell", price: 0.095, quantity: 10_000 });
+  const live = engine.evaluate(belowCost, state(), []);
+  assert.equal(live.decision, "REJECT");
+  assert.ok(live.reasons.includes("MIN_SELL_PROFIT_BPS"));
+
+  const paper = engine.evaluate(belowCost, state({ mode: "PAPER_MODE" }), []);
+  assert.notEqual(paper.decision, "REJECT");
+  const relaxed = paper.metadata?.paperRelaxations as string[] | undefined;
+  assert.ok(relaxed?.includes("SKIPPED_MIN_SELL_PROFIT_BPS"));
+  assert.ok(relaxed?.includes("SKIPPED_RECONCILIATION_GATE"));
+}
+
+{
+  // A clean NORMAL decision carries no relaxation metadata at all.
+  const decision = engine.evaluate(req({ quantity: 1_000 }), state(), []);
+  assert.equal(decision.metadata?.paperRelaxations, undefined);
+}
+
+{
+  // Reconciliation is inapplicable in paper, not passed — recorded even on a clean allow.
+  const decision = engine.evaluate(req({ quantity: 1_000 }), state({ mode: "PAPER_MODE" }), []);
+  const relaxed = decision.metadata?.paperRelaxations as string[] | undefined;
+  assert.deepEqual(relaxed, ["SKIPPED_RECONCILIATION_GATE"]);
+}
+
+{
+  // An unfunded buy is a real error the virtual account can express — rejected in
+  // PAPER too, not waived.
+  const noUsdt = state({
+    mode: "PAPER_MODE",
+    balances: {
+      bybit: [
+        { exchange: "bybit", asset: "ZIG", available: 5_050_000, locked: 0, total: 5_050_000, fetchedAt: Date.now() },
+        { exchange: "bybit", asset: "USDT", available: 0, locked: 0, total: 0, fetchedAt: Date.now() },
+      ],
+      mexc: [],
+    },
+  });
+  const decision = engine.evaluate(req({ side: "buy", price: 0.1, quantity: 10_000 }), noUsdt, []);
+  assert.equal(decision.decision, "REJECT");
+  assert.ok(decision.reasons.includes("NO_USDT_BALANCE"));
+}
+
 console.log("risk-engine tests passed");

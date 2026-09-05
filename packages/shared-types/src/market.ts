@@ -17,12 +17,14 @@ export interface NormalizedMarketState {
   spreadBps: number;
   midPrice: number;
 
+  // Quote-currency notional (USDT), consistently across live and replay feeds.
   bidLiquidity: number;
   askLiquidity: number;
   imbalanceRatio: number;
 
   volatilityRegime: VolatilityRegime;
 
+  reconnectTimestamps?: number[];
   orderbookFreshnessMs: number;
   websocketStatus: WebSocketStatus;
   sequenceStatus: SequenceStatus;

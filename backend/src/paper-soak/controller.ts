@@ -5,17 +5,37 @@ import type { StateEngine } from "../state-engine/index.js";
 import type { ExecutionPipeline } from "../execution-engine/pipeline.js";
 import type { OrderRegistry } from "../execution-engine/registry.js";
 import type { ModeController } from "../decision-gate/mode-controller.js";
-import type { TelegramNotifier } from "../telegram/notifier.js";
-import type { CommandReply, TelegramCommandListener } from "../telegram/command-listener.js";
+import type { Notifier } from "../notify/notifier.js";
 import { PaperSoak, defaultSoakSettings, type SoakSettings } from "./index.js";
+import type { DashboardSoak } from "../api/server.js";
 
 // ── Soak controller ─────────────────────────────────────────────────────────────
 //
-// Owns the mutable soak settings and the single live PaperSoak instance, and wires
-// the Telegram commands. /soak_start flips the engine into PAPER_MODE and builds a
-// fresh soak from the current settings; /soak_stop returns it to READ_ONLY.
-// Settings can only change while STOPPED (so a run is internally consistent).
+// Owns the mutable soak settings and the single live PaperSoak instance. The
+// dashboard is the only control surface: start() flips the engine into PAPER_MODE
+// and builds a fresh soak from the current settings, stop() returns it to READ_ONLY.
+//
+// The soak NEVER starts on its own. It exists only between an explicit start and
+// stop, so "not running" is the default state on every boot.
+//
+// Settings can only change while STOPPED, so a run is internally consistent from
+// first tick to last.
 // ────────────────────────────────────────────────────────────────────────────────
+
+// The shape the dashboard sees while no soak is running.
+const IDLE_SOAK: DashboardSoak = {
+  running: false, runId: null, startedAt: null,
+  zone: null, zoneReason: null, harvestAggression: null, breakoutCandidate: false, allowed: null,
+  zig: 0, usdt: 0, activeZig: 0, reserveZig: 0, avgCost: 0, markPrice: null,
+  nav: null, baselineNav: null, navDelta: null,
+  harvest: {
+    openCycles: 0, completedCycles: 0, completionRate: 0, harvestedUsdt: 0,
+    unrecoveredZig: 0, nearestRebuyTarget: null, sells: 0, buys: 0,
+  },
+  accumulation: null,
+  recentFills: [],
+  blocked: [],
+};
 
 export interface SoakControllerDeps {
   cfg: Config;
@@ -23,9 +43,14 @@ export interface SoakControllerDeps {
   pipeline: ExecutionPipeline;
   registry: OrderRegistry;
   modeController: ModeController;
-  tg: TelegramNotifier;
+  notifier: Notifier;
   markFn: () => number | null;
   log: Logger;
+}
+
+export interface SoakActionResult {
+  ok: boolean;
+  error?: string;
 }
 
 export class SoakController {
@@ -42,11 +67,13 @@ export class SoakController {
     return this.soak !== null;
   }
 
-  async start(reply: CommandReply): Promise<void> {
-    if (this.soak) {
-      reply("ℹ️ Soak already running. /status for snapshot, /soak_stop to stop.");
-      return;
-    }
+  currentSettings(): SoakSettings {
+    return { ...this.settings };
+  }
+
+  async start(): Promise<SoakActionResult> {
+    if (this.soak) return { ok: false, error: "Soak already running" };
+
     // Flip the engine into PAPER_MODE (safe — paper only). The driver also
     // re-checks mode on every tick as a second guard.
     this.d.modeController.transition("PAPER_MODE", "paper soak start", "system");
@@ -57,61 +84,41 @@ export class SoakController {
       stateEngine: this.d.stateEngine,
       pipeline: this.d.pipeline,
       registry: this.d.registry,
-      tg: this.d.tg,
+      notifier: this.d.notifier,
       markFn: this.d.markFn,
       log: this.d.log,
     });
-    await this.soak.start();
-    reply("▶️ <b>Paper soak started.</b> You'll get a message on every decision and fill.");
+
+    try {
+      await this.soak.start();
+      return { ok: true };
+    } catch (err) {
+      // Never leave a half-built soak attached — the next start would report
+      // "already running" for something that never began.
+      this.soak = null;
+      this.d.modeController.transition("READ_ONLY", "paper soak start failed", "system");
+      return { ok: false, error: err instanceof Error ? err.message : "failed to start" };
+    }
   }
 
-  stop(reply: CommandReply): void {
-    if (!this.soak) {
-      reply("ℹ️ Soak is not running.");
-      return;
-    }
+  stop(): SoakActionResult {
+    if (!this.soak) return { ok: false, error: "Soak is not running" };
     this.soak.stop();
     this.soak = null;
     this.d.modeController.transition("READ_ONLY", "paper soak stop", "system");
-    reply("⏹️ <b>Paper soak stopped.</b> Engine back to READ_ONLY.");
+    return { ok: true };
   }
 
-  status(reply: CommandReply): void {
-    if (!this.soak) {
-      reply(`⏸️ Soak not running.\n\n${this.configText()}`);
-      return;
-    }
-    reply(`▶️ <b>Soak running</b>\n\n${this.soak.statusText()}`);
-  }
+  // Settings are locked during a run so a soak's parameters cannot change mid-flight.
+  updateSettings(patch: Partial<SoakSettings>): SoakActionResult {
+    if (this.soak) return { ok: false, error: "Stop the soak before changing settings" };
 
-  fills(reply: CommandReply): void {
-    if (!this.soak) {
-      reply("Soak is not running. Start it with /soak_start to create a paper fill ledger.", this.commandKeyboard());
-      return;
-    }
-    reply(this.soak.fillsText(10), this.commandKeyboard());
-  }
+    const next = { ...this.settings, ...patch };
+    const err = validateSettings(next);
+    if (err) return { ok: false, error: err };
 
-  set(args: string[], reply: CommandReply): void {
-    if (this.soak) {
-      reply("⚠️ Stop the soak first (/soak_stop) before changing settings.");
-      return;
-    }
-    if (args.length === 0) {
-      reply(`Usage: <code>/soak_set key=value</code>\n\n${this.configText()}`);
-      return;
-    }
-    const changed: string[] = [];
-    for (const arg of args) {
-      const [k, v] = arg.split("=");
-      const key = (k ?? "").trim().toLowerCase();
-      const val = (v ?? "").trim();
-      if (!key || !val) { reply(`Bad pair: <code>${arg}</code> (use key=value)`); return; }
-      const err = this.applySetting(key, val);
-      if (err) { reply(`⚠️ ${err}`); return; }
-      changed.push(`${key}=${val}`);
-    }
-    reply(`✅ Updated: <code>${changed.join(", ")}</code>\n\n${this.configText()}`);
+    this.settings = next;
+    return { ok: true };
   }
 
   // Called from main's registry "fill" handler for PAPER- fills.
@@ -119,90 +126,20 @@ export class SoakController {
     this.soak?.onPaperFill(ev, order);
   }
 
-  // Register all Telegram commands on the listener.
-  register(listener: TelegramCommandListener): void {
-    listener.on("/start", (_a, reply) => reply(this.startText(), this.commandKeyboard()));
-    listener.on("/menu", (_a, reply) => reply(this.startText(), this.commandKeyboard()));
-    listener.on("/soak_start", (_a, reply) => this.start(reply));
-    listener.on("/soak_stop", (_a, reply) => this.stop(reply));
-    listener.on("/status", (_a, reply) => this.status(reply));
-    listener.on("/fills", (_a, reply) => this.fills(reply));
-    listener.on("/soak_set", (a, reply) => this.set(a, reply));
-    listener.on("/soak_config", (_a, reply) => reply(this.configText(), this.commandKeyboard()));
-    listener.on("/help", (_a, reply) => reply(this.helpText(), this.commandKeyboard()));
-  }
-
-  private applySetting(key: string, val: string): string | null {
-    const num = Number(val);
-    switch (key) {
-      case "exchange":
-        if (val !== "bybit" && val !== "mexc") return "exchange must be bybit or mexc";
-        this.settings.exchange = val as Exchange;
-        return null;
-      case "zig":
-        if (!Number.isFinite(num) || num < 0) return "zig must be ≥ 0";
-        this.settings.virtualZig = num;
-        return null;
-      case "usdt":
-        if (!Number.isFinite(num) || num < 0) return "usdt must be ≥ 0";
-        this.settings.virtualUsdt = num;
-        return null;
-      case "entry":
-        if (!Number.isFinite(num) || num < 0) return "entry must be ≥ 0 (0 = use market mid)";
-        this.settings.entryCost = num;
-        return null;
-      case "tick":
-        if (!Number.isInteger(num) || num <= 0) return "tick must be a positive integer (seconds)";
-        this.settings.tickSeconds = num;
-        return null;
-      case "buyslice":
-        if (!Number.isFinite(num) || num <= 0 || num > 1) return "buyslice must be in (0,1]";
-        this.settings.buySlicePct = num;
-        return null;
-      default:
-        return `unknown setting '${key}'. Settable: exchange, zig, usdt, entry, tick, buyslice`;
-    }
-  }
-
-  private configText(): string {
-    const s = this.settings;
-    return (
-      `⚙️ <b>Soak settings</b>\n` +
-      `exchange: <code>${s.exchange}</code>\n` +
-      `zig: <code>${s.virtualZig}</code> · usdt: <code>${s.virtualUsdt}</code>\n` +
-      `entry: <code>${s.entryCost === 0 ? "market mid" : s.entryCost}</code> · tick: <code>${s.tickSeconds}s</code> · buyslice: <code>${s.buySlicePct}</code>\n` +
-      `reserve floor: <code>${this.d.cfg.RESERVE_FLOOR}</code> (set in .env — matches risk engine)`
-    );
-  }
-
-  private startText(): string {
-    return `${this.helpText()}\n\n${this.running ? "Current run:" : "Current setup:"}\n${this.running ? this.soak?.statusText() : this.configText()}`;
-  }
-
-  private commandKeyboard(): Record<string, unknown> {
-    return {
-      keyboard: [
-        [{ text: "/status" }, { text: "/fills" }],
-        [{ text: "/soak_config" }],
-        [{ text: "/soak_start" }, { text: "/soak_stop" }],
-        [{ text: "/help" }],
-      ],
-      resize_keyboard: true,
-      one_time_keyboard: false,
-      is_persistent: true,
-    };
-  }
-
-  private helpText(): string {
-    return (
-      `🤖 <b>ZIG Khazana — Soak commands</b>\n` +
-      `/soak_start — flip to PAPER_MODE and begin\n` +
-      `/soak_stop — stop and return to READ_ONLY\n` +
-      `/status — current portfolio snapshot\n` +
-      `/soak_config — show current settings\n` +
-      `/soak_set key=value — change a setting (stopped only)\n` +
-      `   keys: exchange, zig, usdt, entry, tick, buyslice\n` +
-      `   e.g. <code>/soak_set zig=6000000 usdt=15000 tick=30</code>`
-    );
+  // Live state for the dashboard. Idle is a real state, not an error.
+  snapshot(): DashboardSoak {
+    return this.soak?.snapshot() ?? IDLE_SOAK;
   }
 }
+
+function validateSettings(s: SoakSettings): string | null {
+  if (s.exchange !== "bybit" && s.exchange !== "mexc") return "exchange must be bybit or mexc";
+  if (!Number.isFinite(s.virtualZig) || s.virtualZig < 0) return "virtualZig must be >= 0";
+  if (!Number.isFinite(s.virtualUsdt) || s.virtualUsdt < 0) return "virtualUsdt must be >= 0";
+  if (!Number.isFinite(s.entryCost) || s.entryCost < 0) return "entryCost must be >= 0 (0 = use market mid)";
+  if (!Number.isInteger(s.tickSeconds) || s.tickSeconds <= 0) return "tickSeconds must be a positive integer";
+  if (!Number.isFinite(s.buySlicePct) || s.buySlicePct <= 0 || s.buySlicePct > 1) return "buySlicePct must be in (0,1]";
+  return null;
+}
+
+export type { Exchange };

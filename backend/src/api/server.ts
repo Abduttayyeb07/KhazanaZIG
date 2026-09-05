@@ -149,14 +149,90 @@ export interface DashboardManagedOrder {
   createdAt: number;
 }
 
+// Live view of the paper soak. `running: false` with everything else null is the
+// normal idle state — the soak only exists between an explicit start and stop.
+export interface DashboardSoak {
+  running: boolean;
+  runId: string | null;
+  startedAt: number | null;
+
+  zone: string | null;
+  zoneReason: string | null;
+  harvestAggression: "FULL" | "REDUCED" | null;
+  breakoutCandidate: boolean;
+  allowed: {
+    harvestSell: boolean;
+    harvestRebuy: boolean;
+    accumulationBuy: boolean;
+    accumulationRecoverySell: boolean;
+  } | null;
+
+  // Virtual position (paper only — never the real treasury)
+  zig: number;
+  usdt: number;
+  activeZig: number;
+  reserveZig: number;
+  avgCost: number;
+  markPrice: number | null;
+
+  nav: number | null;
+  baselineNav: number | null;
+  navDelta: number | null;
+
+  harvest: {
+    openCycles: number;
+    completedCycles: number;
+    completionRate: number;
+    harvestedUsdt: number;
+    unrecoveredZig: number;
+    nearestRebuyTarget: number | null;
+    sells: number;
+    buys: number;
+  };
+
+  accumulation: {
+    enabled: boolean;
+    openLots: number;
+    recoveredLots: number;
+    usdtDeployed: number;
+    usdtRecovered: number;
+    surplusZig: number;
+    openExposureUsdt: number;
+    budgetRemaining: number;
+    dailyRemaining: number;
+    recycled: number;
+  } | null;
+
+  recentFills: Array<{ side: "buy" | "sell"; qty: number; price: number; at: number; kind: string }>;
+  blocked: Array<{ reason: string; count: number }>;
+}
+
+// The operator's zone boundaries, sent to the dashboard so the chart draws the
+// SAME bands the engine classifies against. Hardcoding them client-side meant a
+// config change would leave the picture silently disagreeing with behaviour —
+// the one thing this chart exists to explain.
+export interface DashboardZones {
+  activeBandLow: number;
+  activeBandHigh: number;
+  zoneALow: number;
+  zoneAHigh: number;
+  zoneBLow: number;
+  zoneBHigh: number;
+  zoneCLow: number;
+  zoneCHigh: number;
+  reserveFloor: number;
+}
+
 export interface DashboardPayload {
   mode: string;
   hasSession: boolean;
   symbol: string;
+  zones: DashboardZones;
   exchanges: { bybit: DashboardExchange; mexc: DashboardExchange };
   account: DashboardAccountState;
   treasury: DashboardTreasury | null;
   execution: { managedOrders: DashboardManagedOrder[] };
+  soak: DashboardSoak;
   events: DashboardEvent[];
   startedAt: number;
   updatedAt: number;
@@ -164,6 +240,7 @@ export interface DashboardPayload {
 
 export class ApiServer {
   private wss: WebSocketServer | null = null;
+  private snapshotProvider: (() => DashboardPayload) | null = null;
   private readonly log: Logger;
   private readonly eventRing: DashboardEvent[] = [];
   private readonly routes = new Map<string, RouteHandler>();
@@ -195,6 +272,22 @@ export class ApiServer {
     const msg = JSON.stringify({ type: "STATE_UPDATE", data: payload });
     for (const client of this.wss.clients) {
       if (client.readyState === WebSocket.OPEN) client.send(msg);
+    }
+  }
+
+  // State is pushed on engine events, so without this a dashboard that connects
+  // during a quiet moment renders an empty shell until something happens to
+  // broadcast. Supplying a snapshot lets a new client be served immediately.
+  setSnapshotProvider(provider: () => DashboardPayload): void {
+    this.snapshotProvider = provider;
+  }
+
+  private sendSnapshot(ws: WebSocket): void {
+    if (!this.snapshotProvider || ws.readyState !== WebSocket.OPEN) return;
+    try {
+      ws.send(JSON.stringify({ type: "STATE_UPDATE", data: this.snapshotProvider() }));
+    } catch (err) {
+      this.log.warn({ err }, "Failed to send initial snapshot");
     }
   }
 
@@ -238,7 +331,11 @@ export class ApiServer {
 
     this.wss = new WebSocketServer({ server, path: "/ws" });
     this.wss.on("connection", (ws, req) => {
-      void this.authorizeWs(ws, req);
+      // Serve the current state only AFTER authorisation resolves — otherwise an
+      // unauthorised socket would receive a full state payload before being closed.
+      void this.authorizeWs(ws, req).then((authorised) => {
+        if (authorised) this.sendSnapshot(ws);
+      });
       this.log.info({ ip: clientIp(req) }, "Dashboard client connected");
       ws.on("close", () => this.log.info("Dashboard client disconnected"));
       ws.on("error", (err) => this.log.warn({ err }, "Dashboard WS error"));
@@ -252,11 +349,16 @@ export class ApiServer {
     });
   }
 
-  private async authorizeWs(ws: WebSocket, req: IncomingMessage): Promise<void> {
-    if (!this.opts.validateSessionToken) return;
+  // Resolves to whether the socket may receive state.
+  private async authorizeWs(ws: WebSocket, req: IncomingMessage): Promise<boolean> {
+    if (!this.opts.validateSessionToken) return true;
     const cookies = parseCookies(headerValue(req, "cookie"));
     const ok = await this.opts.validateSessionToken(cookies[this.opts.sessionCookieName ?? "zig_session"]);
-    if (!ok) ws.close(1008, "Unauthorized");
+    if (!ok) {
+      ws.close(1008, "Unauthorized");
+      return false;
+    }
+    return true;
   }
 
   private async dispatch(req: IncomingMessage, res: ServerResponse, path: string, handler: RouteHandler): Promise<void> {

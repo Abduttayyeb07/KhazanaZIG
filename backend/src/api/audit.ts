@@ -15,6 +15,8 @@ export type AuditAction =
   | "ORDER_PLACE"
   | "ORDER_CANCEL"
   | "APP_LOGIN"
+  | "SOAK_START"
+  | "SOAK_STOP"
   | "OPERATOR_AUTH_FAIL"
   | "RATE_LIMITED";
 

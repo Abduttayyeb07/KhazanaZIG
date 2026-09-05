@@ -15,8 +15,11 @@
     "test:soak": "tsx src/paper-soak/soak-v2.test.ts",
     "test:zone": "tsx src/zone-manager/zone.test.ts",
     "test:acc": "tsx src/accumulation/accumulation.test.ts",
-    "prisma:generate": "prisma generate",
-    "prisma:push": "prisma db push",
+    "add-user": "tsx src/auth/add-user.ts",
+    "sim:fetch": "tsx src/simulation/fetch-history.ts",
+    "sim": "tsx src/simulation/run-sims.ts",
+    "prisma:generate": "tsx src/database/prisma-cli.ts generate",
+    "prisma:push": "tsx src/database/prisma-cli.ts db push",
     "postinstall": "prisma generate"
   },
   "dependencies": {

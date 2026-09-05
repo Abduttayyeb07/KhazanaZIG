@@ -30,6 +30,9 @@ export class PaperEngine implements ExecutionAdapter {
   private readonly onEvent: EventSink;
   private readonly price: PriceProvider;
   private readonly log: Logger;
+  private guard: (order: ManagedOrder) => boolean = () => true;
+  setFillGuard(guard: (order: ManagedOrder) => boolean): void { this.guard = guard; }
+
   private readonly resting = new Map<string, ManagedOrder>();
   private readonly slippageBps: number;
   private readonly fillProbability: number;
@@ -45,6 +48,7 @@ export class PaperEngine implements ExecutionAdapter {
   }
 
   async placeOrder(order: ManagedOrder): Promise<PlaceAck> {
+    if (!this.guard(order)) return { accepted: false, reason: "PAPER_FILL_POLICY_CHANGED" };
     const exchangeOrderId = `PAPER-${order.clientOrderId}`;
     // Ack + OPEN, exactly like a real exchange accepting a resting limit order.
     this.onEvent(this.openEvent(order, exchangeOrderId));
@@ -72,6 +76,7 @@ export class PaperEngine implements ExecutionAdapter {
   // Called on each market update — fills resting orders whose limit has crossed.
   tick(): void {
     for (const order of [...this.resting.values()]) {
+      if (!this.guard(order)) { void this.cancelOrder(order); continue; }
       if (this.isMarketable(order) && this.fillsThisTick()) {
         this.resting.delete(order.clientOrderId);
         this.fill(order, order.quantity - order.filledQuantity, order.exchangeOrderId ?? `PAPER-${order.clientOrderId}`);
@@ -98,7 +103,7 @@ export class PaperEngine implements ExecutionAdapter {
   private isMarketable(order: ManagedOrder): boolean {
     const top = this.price(order.exchange);
     if (!top) return false;
-    return order.side === "sell" ? top.bestBid >= order.price : top.bestAsk <= order.price;
+    return order.side === "sell" ? this.slip("sell", top.bestBid) >= order.price : this.slip("buy", top.bestAsk) <= order.price;
   }
 
   private fill(order: ManagedOrder, qty: number, exchangeOrderId: string, partial = false): void {
@@ -113,7 +118,8 @@ export class PaperEngine implements ExecutionAdapter {
       exchange: order.exchange,
       exchangeOrderId,
       fillId: `PAPER-FILL-${order.clientOrderId}-${Date.now()}`,
-      fillPrice: this.slip(order.side, order.price),
+      // Limit price is a hard bound. Adverse movement reduces fill eligibility instead.
+      fillPrice: order.price,
       fillQuantity: fillQty,
       fee: 0,
       feeAsset: "USDT",

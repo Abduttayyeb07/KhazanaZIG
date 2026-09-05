@@ -119,10 +119,92 @@ export interface DashboardManagedOrder {
   createdAt: number;
 }
 
+export interface SoakAllowed {
+  harvestSell: boolean;
+  harvestRebuy: boolean;
+  accumulationBuy: boolean;
+  accumulationRecoverySell: boolean;
+}
+
+export interface SoakFill {
+  side: "buy" | "sell";
+  qty: number;
+  price: number;
+  at: number;
+  kind: string;
+}
+
+// Live view of the paper simulation. `running: false` is the normal idle state —
+// the soak exists only between an explicit START and STOP.
+export interface DashboardSoak {
+  running: boolean;
+  runId: string | null;
+  startedAt: number | null;
+
+  zone: string | null;
+  zoneReason: string | null;
+  harvestAggression: "FULL" | "REDUCED" | null;
+  breakoutCandidate: boolean;
+  allowed: SoakAllowed | null;
+
+  zig: number;
+  usdt: number;
+  activeZig: number;
+  reserveZig: number;
+  avgCost: number;
+  markPrice: number | null;
+
+  nav: number | null;
+  baselineNav: number | null;
+  navDelta: number | null;
+
+  harvest: {
+    openCycles: number;
+    completedCycles: number;
+    completionRate: number;
+    harvestedUsdt: number;
+    unrecoveredZig: number;
+    nearestRebuyTarget: number | null;
+    sells: number;
+    buys: number;
+  };
+
+  accumulation: {
+    enabled: boolean;
+    openLots: number;
+    recoveredLots: number;
+    usdtDeployed: number;
+    usdtRecovered: number;
+    surplusZig: number;
+    openExposureUsdt: number;
+    budgetRemaining: number;
+    dailyRemaining: number;
+    recycled: number;
+  } | null;
+
+  recentFills: SoakFill[];
+  blocked: Array<{ reason: string; count: number }>;
+}
+
+// Zone boundaries as the ENGINE has them. The chart draws these rather than its
+// own copy, so the picture can never disagree with the classifier.
+export interface DashboardZones {
+  activeBandLow: number;
+  activeBandHigh: number;
+  zoneALow: number;
+  zoneAHigh: number;
+  zoneBLow: number;
+  zoneBHigh: number;
+  zoneCLow: number;
+  zoneCHigh: number;
+  reserveFloor: number;
+}
+
 export interface DashboardState {
   mode: string;
   hasSession: boolean;
   symbol: string;
+  zones: DashboardZones;
   exchanges: {
     bybit: DashboardExchange;
     mexc: DashboardExchange;
@@ -130,6 +212,7 @@ export interface DashboardState {
   account: DashboardAccountState;
   treasury: DashboardTreasury | null;
   execution: { managedOrders: DashboardManagedOrder[] };
+  soak: DashboardSoak;
   events: DashboardEvent[];
   startedAt: number;
   updatedAt: number;

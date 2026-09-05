@@ -34,7 +34,15 @@ export type ActionSource =
   | "session-manager"
   | "paper-soak";
 
+export interface PaperRiskLedger {
+  runId: string; day: string; dailySellZig: number; dailyBuyUsdt: number;
+  startingActive: number; startingUsdt: number; protectedZig: number;
+  usdt: number; zig: number; averageCost?: number;
+}
+
 export interface SystemState {
+  // Separate from exchange fills: paper activity must never become real account truth.
+  paperRisk?: Partial<Record<"bybit" | "mexc", PaperRiskLedger>>;
   market: {
     bybit: NormalizedMarketState | null;
     mexc: NormalizedMarketState | null;
@@ -61,6 +69,7 @@ export interface SystemState {
 }
 
 export type StateAction =
+  | { type: "PAPER_RISK_UPDATED"; exchange: "bybit" | "mexc"; ledger: PaperRiskLedger; source: "paper-soak" }
   | { type: "MARKET_STATE_UPDATED"; exchange: "bybit" | "mexc"; state: NormalizedMarketState; source: "market-ingestion" }
   | { type: "BALANCES_UPDATED"; exchange: "bybit" | "mexc"; balances: ExchangeBalance[]; source: "state-recovery" | "reconciliation" | "paper-soak" }
   | { type: "OPEN_ORDERS_UPDATED"; exchange: "bybit" | "mexc"; orders: ExchangeOrder[]; source: "state-recovery" | "reconciliation" }

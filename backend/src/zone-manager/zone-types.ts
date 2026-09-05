@@ -20,6 +20,9 @@ export interface AllowedActions {
 }
 
 export interface ZoneDecision {
+  bandIndex?: number;
+  bandLow?: number;
+  bandHigh?: number;
   zone: MarketZone;
   price: number;
   allowedActions: AllowedActions;

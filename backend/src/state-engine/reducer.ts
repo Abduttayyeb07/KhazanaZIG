@@ -19,6 +19,8 @@ export function reduce(state: SystemState, action: StateAction): SystemState {
   const now = Date.now();
 
   switch (action.type) {
+    case "PAPER_RISK_UPDATED":
+      return { ...state, paperRisk: { ...state.paperRisk, [action.exchange]: action.ledger }, lastStateUpdateAt: now };
     case "MARKET_STATE_UPDATED":
       return {
         ...state,

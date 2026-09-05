@@ -1,0 +1,40 @@
+﻿const { chromium } = require('playwright');
+const fs = require('fs');
+(async()=>{
+ const browser=await chromium.launch({headless:true,channel:"msedge"});
+ const page=await browser.newPage({viewport:{width:1440,height:1080},deviceScaleFactor:1});
+ const errors=[]; page.on('pageerror',e=>errors.push(e.message));
+ const exchange={wsStatus:'CONNECTED',bestBid:.041947,bestAsk:.041948,midPrice:.041947,spread:.000001,spreadBps:.24,imbalanceRatio:.3,regime:'LOW',freshnessMs:24};
+ const soak={running:false,runId:null,startedAt:null,zone:null,zoneReason:null,harvestAggression:null,breakoutCandidate:false,allowed:null,zig:0,usdt:0,activeZig:0,reserveZig:0,avgCost:0,markPrice:.041947,nav:null,baselineNav:null,navDelta:null,harvest:{openCycles:0,completedCycles:0,completionRate:0,harvestedUsdt:0,unrecoveredZig:0,nearestRebuyTarget:null,sells:0,buys:0},accumulation:null,recentFills:[],blocked:[]};
+ const state={mode:'PAPER_MODE',symbol:'ZIGUSDT',soak,zones:{zoneALow:.045,zoneAHigh:.05,zoneBLow:.05,zoneBHigh:.06,zoneCLow:.06,zoneCHigh:.075,activeBandLow:.045,activeBandHigh:.075,reserveFloor:0},exchanges:{mexc:exchange,bybit:exchange},events:[{time:new Date().toISOString(),level:'info',msg:'MEXC WebSocket connected'}],updatedAt:Date.now()};
+ await page.route('**/api/auth/me',r=>r.fulfill({json:{email:'preview@example.com'}}));
+ let socket;
+ let actions=[];
+ await page.route('**/api/operator/soak/*',r=>{actions.push(r.request().url());return r.fulfill({status:401,json:{error:'Token rejected.'}});});
+ await page.routeWebSocket('**/ws',ws=>{socket=ws;ws.send(JSON.stringify({type:'STATE_UPDATE',data:state}));let i=0; const timer=setInterval(()=>{state.soak.markPrice=.041947+Math.sin(i*.4)*.000025+i*.0000002;state.updatedAt=Date.now();ws.send(JSON.stringify({type:'STATE_UPDATE',data:state}));if(++i>70)clearInterval(timer);},60);});
+ await page.goto('http://localhost:3100');await page.getByRole('heading',{name:'Treasury overview.'}).waitFor();await page.waitForTimeout(5000);
+ await page.screenshot({path:'artifacts/treasury-desktop.png',fullPage:true});
+ await page.getByRole('button',{name:'Strategy zones',exact:true}).click();await page.screenshot({path:'artifacts/treasury-zones.png',fullPage:true});
+ await page.getByRole('button',{name:'Start simulation',exact:true}).click();if(!await page.getByText('Operator token required.').isVisible())throw Error('Missing token error');if(actions.length)throw Error('Request without token');
+ await page.getByLabel('Operator token').fill('preview-only');await page.getByRole('button',{name:'Start simulation',exact:true}).click();await page.getByText('Token rejected.').waitFor();
+ await page.getByRole('button',{name:/Trading activity/}).click();await page.getByRole('heading',{name:'Fills',exact:true}).waitFor();
+ await page.getByRole('button',{name:'System & events'}).click();await page.getByRole('heading',{name:'Events',exact:true}).waitFor();
+ await page.getByRole('button',{name:'Overview',exact:true}).click();await page.getByRole('button',{name:'Price',exact:true}).click();
+ await page.getByLabel('Operator token').fill('');
+ await page.setViewportSize({width:390,height:844});await page.screenshot({path:'artifacts/treasury-mobile.png',fullPage:true});
+ const overflow=await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth);if(overflow)throw Error('Mobile horizontal overflow');
+ await page.setViewportSize({width:1440,height:1080});
+ state.soak={...soak,running:true,nav:24500.75,navDelta:125.30,zig:500000,activeZig:300000,reserveZig:200000,usdt:3527.25,startedAt:Date.now()-600000,allowed:{harvestSell:true,harvestRebuy:true,accumulationBuy:false,accumulationRecoverySell:false},zone:'ZONE_A',harvest:{...soak.harvest,harvestedUsdt:42.65},recentFills:[{side:'buy',qty:100,price:.041947,at:Date.now(),kind:'rebuy'}],blocked:[{reason:'reserve_floor',count:2}]};
+ socket.send(JSON.stringify({type:'STATE_UPDATE',data:state}));
+ await page.getByText('24,500.75',{exact:true}).waitFor();
+ if(!await page.getByRole('button',{name:'Start simulation',exact:true}).isDisabled())throw Error('Start not disabled while running');
+ if(await page.getByRole('button',{name:'Stop',exact:true}).isDisabled())throw Error('Stop disabled while running');
+ await page.screenshot({path:'artifacts/treasury-populated.png',fullPage:true});
+ await page.getByRole('button',{name:/Trading activity/}).click();await page.getByRole('cell',{name:'BUY',exact:true}).waitFor();await page.getByText('reserve_floor',{exact:true}).waitFor();
+ await page.route('**/api/auth/logout',r=>r.fulfill({json:{ok:true}}));
+ await page.getByRole('button',{name:'Sign out',exact:true}).click();await page.getByRole('heading',{name:'Sign in',exact:true}).waitFor();
+ await page.screenshot({path:'artifacts/treasury-signin.png',fullPage:true});
+ console.log(JSON.stringify({errors,overflow,operatorRequests:actions.length,screenshots:3}));await browser.close();
+})().catch(e=>{console.error(e);process.exit(1)});
+
+

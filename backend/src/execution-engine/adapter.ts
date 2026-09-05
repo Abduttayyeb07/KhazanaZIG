@@ -15,6 +15,7 @@ export interface PlaceAck {
 }
 
 export interface ExecutionAdapter {
+  setFillGuard?(guard: (order: ManagedOrder) => boolean): void;
   placeOrder(order: ManagedOrder): Promise<PlaceAck>;
   cancelOrder(order: ManagedOrder): Promise<void>;
 }
