@@ -49,6 +49,12 @@ async function main() {
     validateSessionToken: (token) => appUsers?.validateSessionToken(token) ?? Promise.resolve(false),
   });
 
+  // Secure cookies require TLS. Explicit override wins; otherwise follow NODE_ENV.
+  const cookieSecure = cfg.COOKIE_SECURE ?? (cfg.NODE_ENV === "production");
+  if (!cookieSecure) {
+    log.warn("COOKIE_SECURE=false — session cookie is sent without the Secure flag. Use only without TLS.");
+  }
+
   // Operational feed: everything the engine used to announce over Telegram now
   // lands in the dashboard event log.
   const notifier = new Notifier(api, log);
@@ -285,7 +291,7 @@ async function main() {
       return send(401, { error: "Invalid email or password" });
     }
     audit.record({ action: "APP_LOGIN", ip, success: true, detail: session.email });
-    send(200, { ok: true, email: session.email }, { "Set-Cookie": sessionCookie(session.token, cfg.NODE_ENV === "production") });
+    send(200, { ok: true, email: session.email }, { "Set-Cookie": sessionCookie(session.token, cookieSecure) });
   });
 
   api.route("GET", "/api/auth/me", async ({ cookies, send }) => {
@@ -296,7 +302,7 @@ async function main() {
 
   api.route("POST", "/api/auth/logout", async ({ cookies, send }) => {
     await appUsers?.logout(cookies[SESSION_COOKIE]);
-    send(200, { ok: true }, { "Set-Cookie": clearSessionCookie(cfg.NODE_ENV === "production") });
+    send(200, { ok: true }, { "Set-Cookie": clearSessionCookie(cookieSecure) });
   });
 
   api.route("GET", "/api/public/session-status", async ({ send }) => {

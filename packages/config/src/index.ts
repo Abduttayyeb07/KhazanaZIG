@@ -194,6 +194,13 @@ const EnvSchema = z.object({
 
   // CORS allow-list for the dashboard origin. "*" only acceptable in local dev.
   DASHBOARD_ORIGIN: z.string().default("http://localhost:3000"),
+
+  // Session-cookie Secure flag. Defaults to NODE_ENV === "production" (see
+  // main.ts), which is right behind TLS but silently breaks login when the
+  // dashboard is served over plain http://IP:PORT — browsers refuse to STORE a
+  // Secure cookie on an insecure origin, so sign-in appears to succeed and the
+  // very next request is 401. Set false ONLY when knowingly running without TLS.
+  COOKIE_SECURE: z.enum(["true", "false"]).optional().transform((v) => (v === undefined ? undefined : v === "true")),
 }).superRefine((env, ctx) => {
   const bad = (path: string, message: string) => ctx.addIssue({ code: z.ZodIssueCode.custom, path: [path], message });
 
