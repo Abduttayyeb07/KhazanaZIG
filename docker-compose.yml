@@ -11,7 +11,9 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      # Must match the password inside DATABASE_URL in .env. Changing it after the
+      # volume exists does nothing — the credential lives in the volume.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: zig_treasury
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -45,11 +47,15 @@ services:
     env_file:
       - .env
     environment:
-      # Override connection URLs to use Docker-internal service hostnames.
-      # These override anything in .env so keys from .env are still loaded.
-      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/zig_treasury
-      REDIS_URL: redis://redis:6379
+      # NODE_ENV only. DATABASE_URL is deliberately NOT set here: an `environment:`
+      # entry outranks `env_file:`, so hardcoding it silently discarded the password
+      # set in .env and pinned every deployment to postgres:postgres.
       NODE_ENV: production
+    ports:
+      # Host side bound to loopback — the reverse proxy terminates TLS and forwards
+      # here. The container itself must listen on 0.0.0.0 (API_HOST), or Docker's
+      # forwarder cannot reach it.
+      - "127.0.0.1:3001:3001"
     networks:
       - zig-net
     depends_on:
