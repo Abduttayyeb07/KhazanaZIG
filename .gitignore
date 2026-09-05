@@ -13,3 +13,5 @@ prisma/migrations/
 graphify-out
 docs
 .env.server
+frontend/.next/
+frontend/.next-dev/

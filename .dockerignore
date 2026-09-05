@@ -1,5 +1,9 @@
 node_modules
-frontend
+# NOTE: do NOT ignore `frontend` — the dashboard image builds from it. It was
+# excluded when only the backend was containerised, which made
+# `pnpm --filter @zig/dashboard build` a silent no-op (the filter matched no
+# package) and left .next/standalone missing at COPY time.
+# `.next` stays ignored so a stale committed build never shadows a fresh one.
 .next
 graphify-out
 dist
