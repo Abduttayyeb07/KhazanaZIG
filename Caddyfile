@@ -28,7 +28,13 @@
 	auto_https disable_redirects
 }
 
-:8443 {
+# Explicit hosts, not a bare ":8443" - the internal issuer needs to know what
+# names/IPs to put in the certificate's SAN list. A bare port has no hostname,
+# so a TLS handshake with no SNI (which is exactly what happens connecting by
+# raw IP, e.g. curl or a browser hitting https://<ip>:8443 directly) had no
+# certificate to match and Caddy threw an internal TLS error instead of
+# falling back to one.
+38.242.211.91:8443, localhost:8443, 127.0.0.1:8443 {
 	tls internal
 
 	encode zstd gzip
