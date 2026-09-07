@@ -12,7 +12,7 @@
 #   sudo cp Caddyfile /etc/caddy/Caddyfile     # replace the domain below
 #   sudo systemctl reload caddy
 
-REPLACE-with-your-domain {
+zig.38.242.211.91.sslip.io {
 	encode zstd gzip
 
 	# WebSocket for live state. Caddy passes the Upgrade headers through, but the
