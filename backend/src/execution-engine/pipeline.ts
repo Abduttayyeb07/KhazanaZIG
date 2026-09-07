@@ -47,17 +47,26 @@ export class ExecutionPipeline {
       const state = this.stateEngine.getState();
       if (state.mode !== "PAPER_MODE" || !this.paperPolicy(order)) return false;
       const remaining = order.quantity - order.filledQuantity;
-      // Re-validate against `remaining` — what was ACTUALLY approved and placed
-      // (already reduced by sizing, e.g. by LIQUIDITY_CAP) — never against the
-      // original pre-reduction request. Re-asking for the full original size on a
-      // thin book (ours runs ~$1k of visible depth) reliably sizes back down below
-      // what is already resting, so the guard failed on nearly every order within
-      // seconds of placement: 26 of 27 fills cancelled in a 40h live run, none by
-      // the driver's own (logged) stale-order path. This is what a resting order
-      // survives on, not what it was born from.
+      // Re-validate that the order is still FUNDAMENTALLY legal — right mode, right
+      // zone (via paperPolicy above), not something a hard risk gate would now
+      // outright refuse (REJECT/HALT: wrong reconciliation status, spread blown out
+      // to CHAOTIC, reserve floor breached, etc). What this must NOT do is demand
+      // sizing pick the SAME OR LARGER quantity on every re-check.
+      //
+      // A resting order's size was fixed once, at submission, by the real book depth
+      // at that instant. Re-running the full sizing engine every tick and requiring
+      // its LIQUIDITY_CAP output to never shrink below what's already resting treats
+      // ordinary book noise as a cancellation trigger — on a ~$1k book, liquidity
+      // moves by more than that between ticks as a matter of course. That single
+      // `>=` produced a 96% cancellation rate in a 40h live run (26 of 27 orders,
+      // none by the driver's own logged stale-order path) and, even softened to
+      // compare against the reduced size instead of the pre-reduction request,
+      // still killed both orders in this run's first 16 minutes. The order's own
+      // quantity is a hard ceiling regardless — PaperEngine never fills more than
+      // order.quantity — so a shrinking liquidity estimate cannot cause overspend.
       const decision = this.riskEngine.evaluate({ ...order, type: "LIMIT", tif: "GTC", quantity: remaining }, state,
         this.registry.openOrders().filter(o => o.clientOrderId !== order.clientOrderId));
-      return (decision.decision === "ALLOW" || decision.decision === "REDUCE") && decision.approvedQty >= remaining - 1e-7;
+      return decision.decision === "ALLOW" || decision.decision === "REDUCE";
     });
   }
 
