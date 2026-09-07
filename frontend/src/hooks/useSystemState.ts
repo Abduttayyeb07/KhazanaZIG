@@ -3,8 +3,21 @@
 import { useEffect, useRef, useState } from "react";
 import type { DashboardState } from "@/types";
 
-const WS_URL =
-  process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:3001/ws";
+// NEXT_PUBLIC_WS_URL is inlined at build time as an empty string (not undefined)
+// when unset - Docker passes `ARG NEXT_PUBLIC_WS_URL=""` by default - so a `??`
+// fallback here never fires and `new WebSocket("")` resolves against the current
+// PAGE's own URL (root path, not /ws). Unlike API_BASE elsewhere in this app,
+// which is used as a *prefix* before a path that already starts with "/" (so an
+// empty string harmlessly disappears), the WebSocket URL has no path appended -
+// it needs a real same-origin default computed at connect time, in the browser.
+function resolveWsUrl(): string {
+  if (process.env.NEXT_PUBLIC_WS_URL) return process.env.NEXT_PUBLIC_WS_URL;
+  if (typeof window !== "undefined") {
+    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    return `${proto}//${window.location.host}/ws`;
+  }
+  return "ws://localhost:3001/ws";
+}
 
 type ConnectionStatus = "connecting" | "connected" | "disconnected";
 
@@ -28,7 +41,7 @@ export function useSystemState(enabled = true) {
       if (destroyed) return;
       setStatus("connecting");
 
-      const ws = new WebSocket(WS_URL);
+      const ws = new WebSocket(resolveWsUrl());
       wsRef.current = ws;
 
       ws.onopen = () => {
