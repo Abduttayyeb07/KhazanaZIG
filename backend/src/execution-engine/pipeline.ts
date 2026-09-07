@@ -47,7 +47,15 @@ export class ExecutionPipeline {
       const state = this.stateEngine.getState();
       if (state.mode !== "PAPER_MODE" || !this.paperPolicy(order)) return false;
       const remaining = order.quantity - order.filledQuantity;
-      const decision = this.riskEngine.evaluate({ ...order, type: "LIMIT", tif: "GTC", quantity: Math.max(remaining, (order.requestedQuantity ?? order.quantity) - order.filledQuantity) }, state,
+      // Re-validate against `remaining` — what was ACTUALLY approved and placed
+      // (already reduced by sizing, e.g. by LIQUIDITY_CAP) — never against the
+      // original pre-reduction request. Re-asking for the full original size on a
+      // thin book (ours runs ~$1k of visible depth) reliably sizes back down below
+      // what is already resting, so the guard failed on nearly every order within
+      // seconds of placement: 26 of 27 fills cancelled in a 40h live run, none by
+      // the driver's own (logged) stale-order path. This is what a resting order
+      // survives on, not what it was born from.
+      const decision = this.riskEngine.evaluate({ ...order, type: "LIMIT", tif: "GTC", quantity: remaining }, state,
         this.registry.openOrders().filter(o => o.clientOrderId !== order.clientOrderId));
       return (decision.decision === "ALLOW" || decision.decision === "REDUCE") && decision.approvedQty >= remaining - 1e-7;
     });

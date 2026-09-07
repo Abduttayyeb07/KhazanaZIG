@@ -54,7 +54,6 @@ interface Backoff {
 
 export class HarvestDriver {
   private sellCooldownUntil = 0;
-  private lastSellPrice = 0;
   private readonly buyBucketUntil = new Map<number, number>();
   private sellBackoff: Backoff | null = null;
   private buyBackoff: Backoff | null = null;
@@ -112,7 +111,6 @@ export class HarvestDriver {
         return;
       }
 
-      if (this.account.unrecoveredZig < 1e-6) this.lastSellPrice = 0;
       this.maybeClearBackoff(bid, ask);
       const { allowed, aggression } = this.zone();
 
@@ -159,8 +157,19 @@ export class HarvestDriver {
           const active = Math.max(0, this.account.activeZig - accHeld);
           const cooldownOk = now >= this.sellCooldownUntil;
           const spacing = this.p.sellBucketBps * (aggression === "REDUCED" ? 2 : 1);
-          const bucketOk = !this.account.sellBucketOccupied(bid, spacing) &&
-            (this.lastSellPrice === 0 || bid >= this.lastSellPrice * (1 + spacing / 10_000));
+          // Don't average a sell price down below inventory that's still out. Floor is
+          // derived from actual OPEN cycles (ground truth) rather than a separately
+          // tracked "last attempted price" field: that field used to ratchet up on
+          // mere ACCEPTANCE, so one order the guard later cancelled could still lock
+          // out every future sell until price beat its price — in a live 40h run price
+          // never returned to that peak, and harvest sells stopped entirely for the
+          // remaining 36 hours. A cycle that closes (rebought) naturally drops out of
+          // this floor on the very next tick, with no separate reset to forget.
+          const openSellPrices = this.account.cycles()
+            .filter((c) => c.status !== "COMPLETED")
+            .map((c) => c.avgSellPrice);
+          const sellFloor = openSellPrices.length > 0 ? Math.max(...openSellPrices) * (1 + spacing / 10_000) : 0;
+          const bucketOk = !this.account.sellBucketOccupied(bid, spacing) && bid >= sellFloor;
           const backoffOk = !this.sellBackoff || now >= this.sellBackoff.until;
           if (cooldownOk && bucketOk && backoffOk && active >= this.p.minOrderZig) {
             if (this.account.unrecoveredZig >= this.account.startingActive * this.p.maxUnrecoveredActivePct) {
@@ -207,7 +216,7 @@ export class HarvestDriver {
     if (result.risk) this.reporter.decision({ side, quantity, price }, result.risk);
 
     if (result.accepted) {
-      if (side === "sell") { this.sellCooldownUntil = now + this.p.sellCooldownMs; this.lastSellPrice = price; }
+      if (side === "sell") this.sellCooldownUntil = now + this.p.sellCooldownMs;
       else this.buyBucketUntil.set(priceBucketId(price, this.p.buyBucketBps), now + this.p.buyCooldownMs);
     } else {
       const backoff: Backoff = { until: now + this.p.rejectBackoffMs, price };

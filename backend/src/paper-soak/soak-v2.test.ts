@@ -135,6 +135,7 @@ function harness(opts: {
   accepted?: boolean;
   unrecovered?: number;
   rebuyCycles?: HarvestCycle[];
+  openCycles?: HarvestCycle[];
   params?: Partial<HarvestParams>;
   avgCost?: number;
   sellOccupied?: boolean;
@@ -154,6 +155,10 @@ function harness(opts: {
     unrecoveredZig: opts.unrecovered ?? 0,
     openCyclesForRebuy: () => opts.rebuyCycles ?? [],
     sellBucketOccupied: () => opts.sellOccupied ?? false,
+    // Ground truth for the sell-price floor (see harvest-driver.ts). Empty by
+    // default so these cooldown/occupancy/backoff tests are unaffected by it;
+    // openCycles below opts into cases that need a specific floor.
+    cycles: () => opts.openCycles ?? [],
   } as unknown as VirtualAccount;
   const reporter = { decision: () => {}, intentBlocked: (r: string) => blocked.push(r) } as unknown as SoakReporter;
   let state = opts.state;
@@ -205,6 +210,32 @@ function harness(opts: {
     h.setState(makeState(0.0526, 0.0527));                   // big move clears backoff
     await h.driver.tick();
     ok("backoff: cleared by price move", h.submits.length === 2, h.submits.length);
+  }
+
+  // Sell-price floor: derived from OPEN cycles (ground truth), not a separate
+  // ratcheting field. Regression coverage for the 2026-09-05/07 incident — a
+  // 40h live run stopped selling entirely 36 hours before it was noticed,
+  // because that field locked in a peak price the market never revisited.
+  {
+    const openAt055 = [{ status: "OPEN", avgSellPrice: 0.055585 }] as unknown as HarvestCycle[];
+
+    // Price pulls back below a still-open cycle's sell price and NEVER exceeds
+    // it again — this must not permanently block new sells at OTHER levels.
+    const below = harness({ state: makeState(0.052, 0.0521), openCycles: openAt055 });
+    await below.driver.tick();
+    ok("does not require beating a stale open-cycle price forever", below.submits.length === 0, below.submits.length);
+
+    // A cycle that has CLOSED (rebought) must not go on gating future sells —
+    // this is what a mutable "last price" field got wrong: it never forgot.
+    const closedAt055 = [{ status: "COMPLETED", avgSellPrice: 0.055585 }] as unknown as HarvestCycle[];
+    const afterClose = harness({ state: makeState(0.052, 0.0521), openCycles: closedAt055 });
+    await afterClose.driver.tick();
+    ok("a completed cycle's price does not gate future sells", afterClose.submits.length === 1, afterClose.submits.length);
+
+    // No open cycles at all → no floor → sells freely.
+    const clean = harness({ state: makeState(0.052, 0.0521), openCycles: [] });
+    await clean.driver.tick();
+    ok("no open cycles → sells freely", clean.submits.length === 1, clean.submits.length);
   }
 
   // Cycle-bound buy: no open cycle → no buy; open cycle at target → buy
