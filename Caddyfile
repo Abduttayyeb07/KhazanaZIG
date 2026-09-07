@@ -19,6 +19,15 @@
 #   sudo cp Caddyfile /etc/caddy/Caddyfile
 #   sudo systemctl reload caddy
 
+{
+	# Automatic TLS normally also provisions an HTTP->HTTPS redirect listener on
+	# :80 for every site, regardless of what port the site itself is on - that's
+	# a SEPARATE listener from the site block below, and it's what was colliding
+	# with haproxy on :80 even though nothing here asks for port 80 directly.
+	# There is nothing on port 80 to redirect FROM in this setup, so disable it.
+	auto_https disable_redirects
+}
+
 :8443 {
 	tls internal
 
