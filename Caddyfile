@@ -1,18 +1,27 @@
 # Reverse proxy for the ZIG Khazana console.
 #
-# Everything is served from ONE origin: Caddy terminates TLS, serves the dashboard,
-# and forwards /api and /ws to the engine. That is what lets the browser use
-# relative URLs, and it is why the session cookie works - a cookie set by the API
-# on a different host would be third-party and dropped by most browsers.
+# This box's port 80/443 already belong to a shared haproxy instance routing
+# several OTHER live domains (wickhub.cc, zigscan.org, fracks.xyz, arkive.live)
+# that this deployment does not own and must not disturb. So Caddy runs on its
+# own port (8443) with a self-signed internal CA instead of fighting haproxy
+# for 80/443 or requesting a haproxy config change on a shared box.
 #
-# Caddy obtains and renews the certificate automatically; point your DNS A record
-# at this server first, or the ACME challenge fails.
+# Everything is still served from ONE origin: Caddy terminates TLS, serves the
+# dashboard, and forwards /api and /ws to the engine - relative URLs from the
+# browser, and the session cookie stays first-party.
+#
+# First visit will show a browser TLS warning (self-signed, not from a public
+# CA) - click through once, or trust Caddy's root CA
+# (/root/.local/share/caddy/pki/authorities/local/root.crt on the server) on
+# each device to remove it permanently.
 #
 #   sudo apt install caddy
-#   sudo cp Caddyfile /etc/caddy/Caddyfile     # replace the domain below
+#   sudo cp Caddyfile /etc/caddy/Caddyfile
 #   sudo systemctl reload caddy
 
-zig.38.242.211.91.sslip.io {
+:8443 {
+	tls internal
+
 	encode zstd gzip
 
 	# WebSocket for live state. Caddy passes the Upgrade headers through, but the
@@ -29,7 +38,6 @@ zig.38.242.211.91.sslip.io {
 	reverse_proxy 127.0.0.1:3100
 
 	header {
-		Strict-Transport-Security "max-age=31536000; includeSubDomains"
 		X-Content-Type-Options "nosniff"
 		X-Frame-Options "DENY"
 		Referrer-Policy "strict-origin-when-cross-origin"
