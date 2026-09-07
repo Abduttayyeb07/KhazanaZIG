@@ -132,10 +132,16 @@ export class AccumulationEngine {
 
     const qty = spend / (ctx.ask * (1 + this.p.takerFeeBps / 10_000));
     const accepted = await this.submit("buy", qty, ctx.ask, "acc-buy");
-    // Lock the zone for a cooldown so we don't re-submit before the fill resolves.
-    this.cooldownUntil = ctx.now + this.p.cooldownMs;
-    this.bucketUntil.set(bucket, ctx.now + this.p.cooldownMs);
-    void accepted;
+    // Lock the zone for a cooldown so we don't re-submit before the fill resolves —
+    // but ONLY once a submission actually lands. This used to arm unconditionally,
+    // so a single REJECTED attempt (e.g. the exact live-book-noise pattern the
+    // fill-guard fix addressed) burned the full 15-minute cooldown for nothing —
+    // the harvest driver already gates its own cooldown on `result.accepted` for
+    // the same reason; this brings accumulation in line with it.
+    if (accepted) {
+      this.cooldownUntil = ctx.now + this.p.cooldownMs;
+      this.bucketUntil.set(bucket, ctx.now + this.p.cooldownMs);
+    }
     return true;
   }
 
