@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1
+#
 # node:22-slim (Debian) - ships OpenSSL, which Prisma needs. (alpine/musl trips
 # Prisma's libssl detection.)
 #
@@ -11,7 +13,11 @@ RUN corepack enable && corepack prepare pnpm@9.0.0 --activate
 WORKDIR /app
 
 COPY . .
-RUN pnpm install --no-frozen-lockfile
+# --mount=type=cache persists pnpm's content-addressable store BETWEEN builds -
+# a plain install re-downloads/re-links every package from scratch every time
+# otherwise. Same cache id as frontend/Dockerfile so both images share one store.
+RUN --mount=type=cache,id=pnpm-store,target=/root/.local/share/pnpm/store \
+    pnpm install --no-frozen-lockfile
 # esbuild bundles the engine into dist/main.js, inlining the @zig/* workspace
 # packages from source - no cross-package tsc resolution, no symlink dependence.
 RUN pnpm --filter @zig/core-engine build

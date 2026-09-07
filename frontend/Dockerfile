@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1
+#
 # Dashboard image.
 #
 # NEXT_PUBLIC_* values are inlined into the CLIENT bundle at BUILD time, not read
@@ -10,7 +12,11 @@ RUN corepack enable && corepack prepare pnpm@9.0.0 --activate
 WORKDIR /app
 
 COPY . .
-RUN pnpm install --no-frozen-lockfile
+# --mount=type=cache persists pnpm's content-addressable store BETWEEN builds
+# (a plain COPY . . + install re-downloads/re-links every package on every
+# build - this only touches what actually changed in the lockfile).
+RUN --mount=type=cache,id=pnpm-store,target=/root/.local/share/pnpm/store \
+    pnpm install --no-frozen-lockfile
 
 # Same-origin defaults: the reverse proxy serves the dashboard and forwards
 # /api and /ws to the engine, so relative URLs work without knowing the domain.
@@ -19,7 +25,13 @@ ARG NEXT_PUBLIC_WS_URL=""
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 ENV NEXT_PUBLIC_WS_URL=$NEXT_PUBLIC_WS_URL
 
-RUN pnpm --filter @zig/dashboard build
+# Next's own build cache (webpack/SWC module cache + prior page traces) is what
+# actually makes this step slow to redo from scratch every time - normally it
+# lives in .next/cache and would just get discarded when the build stage exits.
+# Mounting it as a persistent cache means only pages that actually changed get
+# recompiled on the next build, instead of every route + every static page.
+RUN --mount=type=cache,id=next-cache,target=/app/frontend/.next/cache \
+    pnpm --filter @zig/dashboard build
 
 FROM node:22-slim AS runner
 ENV NODE_ENV=production
