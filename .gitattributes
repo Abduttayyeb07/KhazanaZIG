@@ -1,0 +1,10 @@
+# Force LF regardless of the platform that commits. Without this, Windows +
+# git's autocrlf converts these to CRLF on checkout — Go-based YAML parsers
+# (Docker Compose) are stricter about stray \r than most, and it broke a
+# working docker-compose.yml on the Linux deploy target after an edit made
+# from a Windows checkout.
+*.yml text eol=lf
+*.yaml text eol=lf
+Dockerfile text eol=lf
+*.sh text eol=lf
+Caddyfile text eol=lf

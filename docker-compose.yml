@@ -1,5 +1,5 @@
 # All services communicate over the internal zig-net network. Nothing is
-# published beyond 127.0.0.1 — postgres and redis were never exposed; the
+# published beyond 127.0.0.1 - postgres and redis were never exposed; the
 # dashboard and core-engine are loopback-only too, reachable from outside only
 # through Caddy (see /Caddyfile), which terminates TLS on 443.
 
@@ -14,7 +14,7 @@ services:
     environment:
       POSTGRES_USER: postgres
       # Must match the password inside DATABASE_URL in .env. Changing it after the
-      # volume exists does nothing — the credential lives in the volume.
+      # volume exists does nothing - the credential lives in the volume.
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: zig_treasury
     volumes:
@@ -55,7 +55,7 @@ services:
       NODE_ENV: production
     ports:
       # Loopback only. Was briefly "3101:3001" (all interfaces) while working
-      # through container networking — that put the operator token and session
+      # through container networking - that put the operator token and session
       # login on the open internet on a raw HTTP port, reachable by anyone who
       # scanned it. Caddy (see /Caddyfile) is the only thing that should reach
       # this port; it proxies from 443 over the internal loopback interface.
@@ -81,7 +81,7 @@ services:
         NEXT_PUBLIC_WS_URL: "${PUBLIC_WS_URL:-}"
     restart: unless-stopped
     ports:
-      # Loopback only — same reasoning as core-engine above.
+      # Loopback only - same reasoning as core-engine above.
       - "127.0.0.1:3100:3000"
     networks:
       - zig-net

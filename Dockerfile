@@ -1,4 +1,4 @@
-# node:22-slim (Debian) — ships OpenSSL, which Prisma needs. (alpine/musl trips
+# node:22-slim (Debian) - ships OpenSSL, which Prisma needs. (alpine/musl trips
 # Prisma's libssl detection.)
 #
 # Single build stage: install with the source present so pnpm creates the
@@ -13,7 +13,7 @@ WORKDIR /app
 COPY . .
 RUN pnpm install --no-frozen-lockfile
 # esbuild bundles the engine into dist/main.js, inlining the @zig/* workspace
-# packages from source — no cross-package tsc resolution, no symlink dependence.
+# packages from source - no cross-package tsc resolution, no symlink dependence.
 RUN pnpm --filter @zig/core-engine build
 
 FROM node:22-slim@sha256:7af03b14a13c8cdd38e45058fd957bf00a72bbe17feac43b1c15a689c029c732 AS runner

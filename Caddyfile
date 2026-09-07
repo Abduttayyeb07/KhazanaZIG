@@ -2,7 +2,7 @@
 #
 # Everything is served from ONE origin: Caddy terminates TLS, serves the dashboard,
 # and forwards /api and /ws to the engine. That is what lets the browser use
-# relative URLs, and it is why the session cookie works — a cookie set by the API
+# relative URLs, and it is why the session cookie works - a cookie set by the API
 # on a different host would be third-party and dropped by most browsers.
 #
 # Caddy obtains and renews the certificate automatically; point your DNS A record
